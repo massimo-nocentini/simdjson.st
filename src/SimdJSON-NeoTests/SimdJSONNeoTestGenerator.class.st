@@ -113,8 +113,9 @@ SimdJSONNeoTestGenerator class >> report [
 	"Run the generated classes; print, for each, what passed of what ran and what was
 	 skipped, then answer the total"
 
-	| out run passed |
+	| out newLine run passed |
 	out := Stdio stdout.
+	newLine := OSPlatform current lineEnding.
 	run := passed := 0.
 	self generatedClasses do: [ :class |
 		| result |
@@ -123,9 +124,9 @@ SimdJSONNeoTestGenerator class >> report [
 			nextPutAll: class name; nextPutAll: ': ';
 			print: result passedCount; nextPut: $/; print: result runCount;
 			nextPutAll: ' passed, ';
-			print: result skippedCount; nextPutAll: ' skipped (lenient)'; lf.
+			print: result skippedCount; nextPutAll: ' skipped (lenient)'; nextPutAll: newLine.
 		result failures , result errors do: [ :each |
-			out nextPutAll: '    failed: '; nextPutAll: each selector; lf ].
+			out nextPutAll: '    failed: '; nextPutAll: each selector; nextPutAll: newLine ].
 		run := run + result runCount.
 		passed := passed + result passedCount ].
 	out flush.
