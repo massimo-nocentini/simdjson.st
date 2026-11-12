@@ -19,6 +19,11 @@ SimdJSONParseError.  Load it, alone, with:
 		repository: 'github://massimo-nocentini/simdjson.st:master/src';
 		load: 'Core'
 
+Without the plugin, the package SimdJSON-FFI (group FFI) reads and writes through the FFI
+of the image with libSimdJSONFFI, the same engine as a library of its own (SimdJSONReader
+class>>fallback, backend): the same values, made in the image from a tape the library
+writes, and the same JSON, written by the library from a tape the image writes.
+
 The primitive (primitiveRead) answers a whole value at a time: either Dictionaries and
 Arrays built in C, when the reader is configured as NeoJSON's defaults, or a tree of
 Arrays and SimdJSONFlatMaps (k1 v1 k2 v2 ...) that the reader turns into mapClass and

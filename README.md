@@ -19,6 +19,20 @@ A Pharo 15 image on a VM with the **SimdJSONPlugin**: the fork
 [massimo-nocentini/pharo-vm](https://github.com/massimo-nocentini/pharo-vm), branch
 `pharo-12`, builds it (`docs/SimdJSON.md` there documents the plugin and how to build it).
 
+Without the plugin, the group `FFI` reads and writes through the FFI of the image with
+**libSimdJSONFFI**, the plugin's engine built as a library of its own, which the same fork
+builds next to its plugins (`libSimdJSONFFI.so`, `libSimdJSONFFI.dylib`,
+`SimdJSONFFI.dll`). Put the library next to the VM or the image, or name it:
+
+```smalltalk
+SimdJSONLibrary libraryPath: '/path/to/libSimdJSONFFI.so'.
+SimdJSONReader backend. "#plugin, #ffi or nil"
+```
+
+It reads the same values and writes the same text: reading takes 2 to 3 times the
+plugin's time, 7 to 40 times less than NeoJSON's; writing 1 to 3 times the plugin's time,
+2 to 11 times less than NeoJSON's.
+
 ## Loading
 
 Everything: the reader and writer, their tests, and the tests against NeoJSON (which
@@ -53,6 +67,8 @@ Metacello new
 | --- | --- |
 | `Core` | `SimdJSON` |
 | `Tests` | `SimdJSON-Tests` |
+| `FFI` | `SimdJSON-FFI`: the reader and the writer without the plugin, through libSimdJSONFFI |
+| `FFITests` | `SimdJSON-FFI-Tests` |
 | `NeoTests` | `SimdJSON-NeoTests`, with NeoJSON (its groups `core` and `tests`) |
 | `default` | all of the above |
 
@@ -62,6 +78,7 @@ From the Test Runner, or headless:
 
 ```sh
 pharo --headless Pharo.image --no-default-preferences test --fail-on-failure --fail-on-error SimdJSON-Tests
+pharo --headless Pharo.image --no-default-preferences test --fail-on-failure --fail-on-error SimdJSON-FFI-Tests
 pharo --headless Pharo.image --no-default-preferences test --fail-on-failure --fail-on-error SimdJSON-NeoTests
 pharo --headless Pharo.image --no-default-preferences test --fail-on-failure --fail-on-error SimdJSON-NeoTests-Generated
 pharo --headless Pharo.image --no-default-preferences eval 'SimdJSONNeoTestGenerator report'
@@ -70,6 +87,10 @@ pharo --headless Pharo.image --no-default-preferences eval 'SimdJSONNeoTestGener
 `test` matches whole package names, so `SimdJSON-NeoTests` runs `SimdJSONCompatTests`
 only: the generated `SJ*` classes (see below) are in `SimdJSON-NeoTests-Generated`, which
 the third line runs; the last line runs them too and prints a summary.
+
+`SimdJSON-Tests` skips the tests of the plugin itself on a VM without it.
+`SimdJSON-FFI-Tests` runs the reader, mapping and writer tests again through
+libSimdJSONFFI, with the plugin hidden, and is skipped without the library.
 
 `SimdJSONSlowTests` are skipped unless the environment has `SJ_SLOW`. With `SJ_CORPUS`
 naming the `jsonexamples` directory of

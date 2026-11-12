@@ -77,10 +77,37 @@ SimdJSONReader class >> dictLayout [
 ]
 
 { #category : 'plugin' }
+SimdJSONReader class >> backend [
+	"What reads JSON in this session: #plugin, #ffi (the package SimdJSON-FFI and its
+	library, without the plugin), or nil"
+
+	self pluginAvailable ifTrue: [ ^ #plugin ].
+	^ self fallback ifNotNil: [ #ffi ]
+
+]
+
+{ #category : 'plugin' }
 SimdJSONReader class >> errorMessageFor: code [
 	^ (self sessionMemo at: 3)
 		at: code
-		ifAbsentPut: [ (self primErrorMessage: code) ifNil: [ 'error ', code printString ] ]
+		ifAbsentPut: [
+			(self pluginAvailable
+				ifTrue: [ self primErrorMessage: code ]
+				ifFalse: [ self fallback ifNotNil: [ :fallback | fallback errorMessage: code ] ])
+					ifNil: [ 'error ', code printString ] ]
+
+]
+
+{ #category : 'plugin' }
+SimdJSONReader class >> fallback [
+	"What reads and writes without the plugin: SimdJSONLibrary, of the package SimdJSON-FFI,
+	when it is loaded and its library is found; else nil.  It answers
+	read:from:to:flags:maxUnits: as primRead: does, errorMessage:, and
+	write:flags:newLine:level:maxDepth:maxBytes: as SimdJSONWriter class>>primWrite: does"
+
+	(self testHook: #fallbackMissing) == true ifTrue: [ ^ nil ].
+	^ (self environment at: #SimdJSONLibrary ifAbsent: [ nil ]) ifNotNil: [ :library |
+		library isAvailable ifTrue: [ library ] ifFalse: [ nil ] ]
 
 ]
 
@@ -467,7 +494,8 @@ SimdJSONReader class >> testHook: aSymbol [
 { #category : 'testing' }
 SimdJSONReader class >> testHook: aSymbol value: anObject [
 	"Test-only overrides, nil removes one: #budget (the budget of every read),
-	#pluginMissing (true: as if the module were absent), #nativeSelfTestFails (true)"
+	#pluginMissing (true: as if the module were absent), #fallbackMissing (true: as if
+	SimdJSON-FFI were not loaded), #nativeSelfTestFails (true)"
 
 	TestHooks ifNil: [ TestHooks := Dictionary new ].
 	anObject
@@ -881,8 +909,18 @@ SimdJSONReader >> pluginMissing [
 
 { #category : 'private' }
 SimdJSONReader >> prim: flags budget: budget [
+	"One read by the plugin, or by the fallback (SimdJSON-FFI) without it, which answers
+	the same Array, has no budget, and builds Dictionaries in the image"
+
 	| dict |
-	(self class testHook: #pluginMissing) == true ifTrue: [ ^ SimdJSONFailure on: nil ].
+	self class pluginAvailable ifFalse: [
+		^ self class fallback
+			ifNil: [ SimdJSONFailure on: nil ]
+			ifNotNil: [ :fallback |
+				self class count: #reads.
+				fallback
+					read: source from: index to: stop flags: flags
+					maxUnits: (self class maxInputUnits ifNil: [ -1 ]) ] ].
 	dict := flags anyMask: self class flagDict.
 	self class count: #reads.
 	^ self class
@@ -1059,11 +1097,16 @@ SimdJSONReader >> upToEnd [
 
 { #category : 'private' }
 SimdJSONReader >> useNativeDictionary [
+	"Whether one read answers the Dictionaries and Arrays: built in C by the plugin, or by
+	the fallback, which builds them in the image as materialize: would"
+
 	^ nativeDictionaries
 		and: [ self mapClass == Dictionary
 		and: [ self listClass == Array
 		and: [ propertyNamesAsSymbols ~~ true
-		and: [ self class nativeDictionariesWork ] ] ] ]
+		and: [ self class pluginAvailable
+			ifTrue: [ self class nativeDictionariesWork ]
+			ifFalse: [ self class fallback notNil ] ] ] ] ]
 
 ]
 

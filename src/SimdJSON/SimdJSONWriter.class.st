@@ -179,7 +179,16 @@ SimdJSONWriter >> bytesFor: anObject [
 
 { #category : 'private' }
 SimdJSONWriter >> callPrim: anObject flags: flags [
-	(SimdJSONReader testHook: #pluginMissing) == true ifTrue: [ ^ SimdJSONFailure on: nil ].
+	"One write by the plugin, or by the fallback of SimdJSONReader (SimdJSON-FFI) without
+	it, which answers the same Array"
+
+	SimdJSONReader pluginAvailable ifFalse: [
+		^ SimdJSONReader fallback
+			ifNil: [ SimdJSONFailure on: nil ]
+			ifNotNil: [ :fallback |
+				fallback
+					write: anObject flags: flags newLine: newLine asString asByteString level: level
+					maxDepth: self class maxDepth maxBytes: (self class maxOutputBytes ifNil: [ -1 ]) ] ].
 	^ self class
 		primWrite: anObject flags: flags newLine: newLine asString asByteString level: level
 		maxDepth: self class maxDepth maxBytes: (self class maxOutputBytes ifNil: [ -1 ])

@@ -6,6 +6,13 @@ Class {
 	#tag : 'Tests'
 }
 
+{ #category : 'running' }
+SimdJSONNativeTests >> setUp [
+
+	super setUp.
+	self requirePlugin
+]
+
 { #category : 'tests' }
 SimdJSONNativeTests >> testKillSwitch [
 

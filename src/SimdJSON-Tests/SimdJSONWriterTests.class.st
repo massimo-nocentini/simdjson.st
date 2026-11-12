@@ -291,8 +291,11 @@ SimdJSONWriterTests >> testOwnWriters [
 
 { #category : 'tests - errors' }
 SimdJSONWriterTests >> testPluginMissing [
+	"Without the module, and without the fallback of SimdJSON-FFI"
 
-	SimdJSONReader testHook: #pluginMissing value: true.
+	SimdJSONReader
+		testHook: #pluginMissing value: true;
+		testHook: #fallbackMissing value: true.
 	self should: [ self write: #( 1 ) ] raise: SimdJSONResourceError
 ]
 

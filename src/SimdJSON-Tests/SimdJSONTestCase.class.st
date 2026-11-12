@@ -98,6 +98,14 @@ SimdJSONTestCase >> reader: aString [
 	^ SimdJSONReader on: aString readStream
 ]
 
+{ #category : 'helpers' }
+SimdJSONTestCase >> requirePlugin [
+	"Skip a test of the plugin itself (its primitives, its budget, the Dictionaries it builds)
+	 on a VM without it"
+
+	SimdJSONReader pluginAvailable ifFalse: [ self skip: 'the test needs the SimdJSONPlugin' ]
+]
+
 { #category : 'running' }
 SimdJSONTestCase >> setUp [
 	"The first read of a session runs the native self-test, which reads too: run it before
@@ -144,7 +152,7 @@ SimdJSONTestCase >> tearDown [
 		maxInputUnits: savedMaxInputUnits;
 		nativeDictionaries: true.
 	SimdJSONWriter maxOutputBytes: nil.
-	#( #budget #pluginMissing #nativeSelfTestFails ) do: [ :each |
+	#( #budget #pluginMissing #fallbackMissing #nativeSelfTestFails ) do: [ :each |
 		SimdJSONReader testHook: each value: nil ].
 	super tearDown
 ]

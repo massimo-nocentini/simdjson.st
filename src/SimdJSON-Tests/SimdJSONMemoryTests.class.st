@@ -6,6 +6,13 @@ Class {
 	#tag : 'Tests'
 }
 
+{ #category : 'running' }
+SimdJSONMemoryTests >> setUp [
+
+	super setUp.
+	self requirePlugin
+]
+
 { #category : 'helpers' }
 SimdJSONMemoryTests >> heapBytesOf: anObject [
 	"The bytes of anObject and of everything it holds that primitiveRead allocates: the

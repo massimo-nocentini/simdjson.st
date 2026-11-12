@@ -110,6 +110,7 @@ SimdJSONReaderTests >> testErrorCodes [
 { #category : 'tests - errors' }
 SimdJSONReaderTests >> testErrorMessages [
 
+	self requirePlugin.
 	self assert: ((SimdJSONReader errorMessageFor: 9) beginsWith: 'NUMBER_ERROR').
 	self assert: ((SimdJSONReader errorMessageFor: 13) beginsWith: 'EMPTY').
 	self assert: (SimdJSONReader errorMessageFor: 1001) notEmpty.
@@ -452,6 +453,7 @@ SimdJSONReaderTests >> testOtherStreams [
 SimdJSONReaderTests >> testPluginInfo [
 
 	| info |
+	self requirePlugin.
 	self assert: SimdJSONReader pluginAvailable.
 	info := SimdJSONReader primInfo.
 	self assert: info size equals: 8.
@@ -473,9 +475,13 @@ SimdJSONReaderTests >> testPluginInfo [
 
 { #category : 'tests - plugin' }
 SimdJSONReaderTests >> testPluginMissing [
-	"Without the module, reading signals SimdJSONResourceError"
+	"Without the module, and without the fallback of SimdJSON-FFI, reading signals
+	 SimdJSONResourceError"
 
-	SimdJSONReader testHook: #pluginMissing value: true.
+	SimdJSONReader
+		testHook: #pluginMissing value: true;
+		testHook: #fallbackMissing value: true.
+	self assert: SimdJSONReader backend isNil.
 	self
 		should: [ self read: '[1]' ]
 		raise: SimdJSONResourceError
@@ -513,6 +519,7 @@ SimdJSONReaderTests >> testPrimitiveErrorsAndFailures [
 	"A parse error is a status; only bad arguments fail the primitive"
 
 	| result |
+	self requirePlugin.
 	result := self prim: '[1,' flags: 0 budget: -1.
 	self assert: result first equals: 2.
 	self assert: (result at: 2) isNil.
@@ -540,6 +547,7 @@ SimdJSONReaderTests >> testPrimitiveErrorsAndFailures [
 SimdJSONReaderTests >> testPrimitiveKeysAndNext [
 
 	| result |
+	self requirePlugin.
 	result := self prim: '[{"a":1,"b":2},{"a":3}]' flags: 8 budget: -1.
 	self assert: (result at: 5) equals: #( 'a' 'b' ).
 	self assert: ((result at: 2) first at: 1) equals: 1.
@@ -562,6 +570,7 @@ SimdJSONReaderTests >> testPrimitiveMaxUnits [
 	"A whole rest over maxUnits gives way to the value, and a value over it is a status"
 
 	| result |
+	self requirePlugin.
 	result := self prim: '[1,2] [3,4]' from: 1 to: 11 flags: 0 budget: -1 maxUnits: 5.
 	self assert: result first equals: 0.
 	self assert: (result at: 2) equals: #( 1 2 ).
@@ -583,6 +592,7 @@ SimdJSONReaderTests >> testPrimitiveNextAfterRefusedBudget [
 	 that reuses it still answers the index of the next value"
 
 	| result |
+	self requirePlugin.
 	result := self prim: '[1] [2]' from: 1 to: 3 flags: 0 budget: 0 maxUnits: -1.
 	self assert: result first equals: 1.
 	result := self prim: '[1] [2]' from: 1 to: 7 flags: 1 budget: -1 maxUnits: -1.
@@ -595,6 +605,7 @@ SimdJSONReaderTests >> testPrimitiveResult [
 	"The 6 slots: status, value, nextIndex, fixups, keys, code"
 
 	| result value |
+	self requirePlugin.
 	result := self prim: '[1e2,{"k":"v"}]' flags: 2 budget: -1.
 	self assert: result size equals: 6.
 	self assert: result first equals: 0.
