@@ -259,7 +259,7 @@ SimdJSONReader class >> nativeSelfTestPrecheck [
 { #category : 'native dictionaries' }
 SimdJSONReader class >> nativeSelfTestProbe [
 	"The same JSON built by the plugin and through the tree path, compared, looked up and
-	changed alike"
+	changed alike; the class of what the plugin built is checked, exactly Dictionary"
 
 	| json native tree |
 	json := self nativeSelfTestJSON.
@@ -297,7 +297,7 @@ SimdJSONReader class >> nativeSelfTestRead: json [
 		primRead: json from: 1 to: json size flags: self flagExact + self flagDict budget: -1
 		maxUnits: -1 objectClass: Dictionary associationClass: Association wideStringClass: WideString
 		hashSeed: ByteString hash dictLayout: self dictLayout.
-	result class == SimdJSONFailure
+	result isSimdJSONFailure
 		ifTrue: [ ^ self error: 'primitiveRead failed: ', result ec printString ].
 	(result at: 1) = 0
 		ifFalse: [ ^ self error: 'primitiveRead answered status ', (result at: 1) printString ].
@@ -524,27 +524,24 @@ SimdJSONReader >> cMemoryFailure [
 { #category : 'private' }
 SimdJSONReader >> classifyStream [
 	"#string: a ReadStream on a String, read by the plugin in characters; #bytes: on a
-	ByteArray, in bytes of UTF-8; anything else is read to its end now, into a ReadStream
-	of my own: originalStream keeps the one given, which close closes"
+	ByteArray, in bytes of UTF-8; anything else is read to its end now (with upToEnd, or
+	next and atEnd), into a ReadStream of my own: originalStream keeps the one given, which
+	close closes"
 
 	| contents |
 	depth := 0.
 	multi := false.
 	hasPending := false.
-	readStream class == ReadStream
-		ifTrue: [
-			contents := readStream originalContents.
-			contents isString ifTrue: [ ^ self useSource: contents kind: #string ].
-			contents class == ByteArray ifTrue: [ ^ self useSource: contents kind: #bytes ] ].
+	contents := readStream simdJSONContents.
+	contents simdJSONSourceKind ifNotNil: [ :kind | ^ self useSource: contents kind: kind ].
 	contents := (readStream respondsTo: #upToEnd)
 		ifTrue: [ readStream upToEnd ]
 		ifFalse: [
 			String streamContents: [ :stream |
 				[ readStream atEnd ] whileFalse: [ stream nextPut: readStream next ] ] ].
-	(contents isString or: [ contents class == ByteArray ])
-		ifFalse: [ contents := String withAll: contents ].
+	contents simdJSONSourceKind ifNil: [ contents := String withAll: contents ].
 	readStream := ReadStream on: contents.
-	self useSource: contents kind: (contents isString ifTrue: [ #string ] ifFalse: [ #bytes ])
+	self useSource: contents kind: contents simdJSONSourceKind
 
 ]
 
@@ -642,16 +639,6 @@ SimdJSONReader >> initialize [
 
 ]
 
-{ #category : 'private' }
-SimdJSONReader >> keyFrom: aKey [
-	"A key of the tree: a String, or the index of a Symbol in keyTable"
-
-	^ aKey isInteger
-		ifTrue: [ keyTable at: aKey ]
-		ifFalse: [ aKey ]
-
-]
-
 { #category : 'accessing' }
 SimdJSONReader >> listClass [
 	^ listClass ifNil: [ Array ]
@@ -678,31 +665,38 @@ SimdJSONReader >> mapClass: aClass [
 
 { #category : 'private' }
 SimdJSONReader >> materialize: node [
-	"A node of the tree as NeoJSON would have read it, with mapClass and listClass"
+	"A node of the tree as NeoJSON would have read it, with mapClass and listClass: what it
+	answers to simdJSONMaterializeWith:map:list:"
 
-	^ self materialize: node map: self mapClass list: self listClass
+	^ node simdJSONMaterializeWith: self map: self mapClass list: self listClass
 
 ]
 
 { #category : 'private' }
-SimdJSONReader >> materialize: node map: aMapClass list: aListClass [
-	"The children of an Array are materialized in place, then copied once into aListClass"
+SimdJSONReader >> materializeList: anArray map: aMapClass list: aListClass [
+	"The children of anArray materialized in place, then anArray copied once into aListClass
+	(a class configured, not the class of a value)"
+
+	1 to: anArray size do: [ :i |
+		anArray at: i put: ((anArray at: i) simdJSONMaterializeWith: self map: aMapClass list: aListClass) ].
+	^ aListClass == Array
+		ifTrue: [ anArray ]
+		ifFalse: [ aListClass withAll: anArray ]
+
+]
+
+{ #category : 'private' }
+SimdJSONReader >> materializeMap: aFlatMap map: aMapClass list: aListClass [
+	"A new aMapClass with the keys and the values of aFlatMap (k1 v1 k2 v2 ...): each key a
+	String, or the index of a Symbol in keyTable, the values materialized"
 
 	| map |
-	node class == SimdJSONFlatMap ifTrue: [
-		map := aMapClass new.
-		1 to: node size by: 2 do: [ :i |
-			map
-				at: (self keyFrom: (node at: i))
-				put: (self materialize: (node at: i + 1) map: aMapClass list: aListClass) ].
-		^ map ].
-	node class == Array ifTrue: [
-		1 to: node size do: [ :i |
-			node at: i put: (self materialize: (node at: i) map: aMapClass list: aListClass) ].
-		^ aListClass == Array
-			ifTrue: [ node ]
-			ifFalse: [ aListClass withAll: node ] ].
-	^ node
+	map := aMapClass new.
+	1 to: aFlatMap size by: 2 do: [ :i |
+		map
+			at: ((aFlatMap at: i) simdJSONKeyIn: keyTable)
+			put: ((aFlatMap at: i + 1) simdJSONMaterializeWith: self map: aMapClass list: aListClass) ].
+	^ map
 
 ]
 
@@ -783,7 +777,7 @@ SimdJSONReader >> parseList [
 	| node |
 	depth = 0 ifTrue: [ ^ self topLevel: [ self parseList ] ].
 	node := self takeValue.
-	node class == Array ifFalse: [ ^ self error: '[ expected' ].
+	node isArray ifFalse: [ ^ self error: '[ expected' ].
 	^ self materialize: node
 
 ]
@@ -795,7 +789,7 @@ SimdJSONReader >> parseListDo: block [
 	| node |
 	depth = 0 ifTrue: [ ^ self topLevel: [ self parseListDo: block ] ].
 	node := self takeValue.
-	node class == Array ifFalse: [ ^ self error: '[ expected' ].
+	node isArray ifFalse: [ ^ self error: '[ expected' ].
 	1 to: node size do: [ :i |
 		pending := node at: i.
 		hasPending := true.
@@ -816,7 +810,7 @@ SimdJSONReader >> parseMap [
 	| node |
 	depth = 0 ifTrue: [ ^ self topLevel: [ self parseMap ] ].
 	node := self takeValue.
-	node class == SimdJSONFlatMap ifFalse: [ ^ self error: '{ expected' ].
+	node isSimdJSONFlatMap ifFalse: [ ^ self error: '{ expected' ].
 	^ self materialize: node
 
 ]
@@ -828,7 +822,7 @@ SimdJSONReader >> parseMapDo: block [
 	| node |
 	depth = 0 ifTrue: [ ^ self topLevel: [ self parseMapDo: block ] ].
 	node := self takeValue.
-	node class == SimdJSONFlatMap ifFalse: [ ^ self error: '{ expected' ].
+	node isSimdJSONFlatMap ifFalse: [ ^ self error: '{ expected' ].
 	1 to: node size by: 2 do: [ :i |
 		pending := (node at: i) -> (node at: i + 1).
 		hasPending := #entry.
@@ -852,11 +846,11 @@ SimdJSONReader >> parseMapKeysDo: block [
 	| node |
 	depth = 0 ifTrue: [ ^ self topLevel: [ self parseMapKeysDo: block ] ].
 	node := self takeValue.
-	node class == SimdJSONFlatMap ifFalse: [ ^ self error: '{ expected' ].
+	node isSimdJSONFlatMap ifFalse: [ ^ self error: '{ expected' ].
 	1 to: node size by: 2 do: [ :i |
 		pending := node at: i + 1.
 		hasPending := true.
-		block value: (self keyFrom: (node at: i)).
+		block value: ((node at: i) simdJSONKeyIn: keyTable).
 		hasPending := false ]
 
 ]
@@ -878,7 +872,7 @@ SimdJSONReader >> parsePropertyName [
 	entry := pending.
 	pending := entry value.
 	hasPending := true.
-	^ self keyFrom: entry key
+	^ entry key simdJSONKeyIn: keyTable
 
 ]
 
@@ -953,13 +947,13 @@ SimdJSONReader >> read: wantTree [
 			ifTrue: [ Smalltalk vm parameterAt: 54 ]
 			ifFalse: [ -1 ] ].
 	r := self prim: flags budget: budget.
-	r class == SimdJSONFailure ifTrue: [ r := self recover: r flags: flags ].
+	r isSimdJSONFailure ifTrue: [ r := self recover: r flags: flags ].
 	(r at: 1) = 3 ifTrue: [ ^ self tooLarge: (r at: 6) ].
 	(r at: 1) = 1 ifTrue: [
 		self class count: #overBudget.
 		self grow: ((r at: 6) - (Smalltalk vm parameterAt: 54) + 1048576 max: 1048576).
 		r := self prim: flags budget: (Smalltalk vm parameterAt: 54).
-		r class == SimdJSONFailure ifTrue: [ r := self recover: r flags: flags ].
+		r isSimdJSONFailure ifTrue: [ r := self recover: r flags: flags ].
 		(r at: 1) = 1 ifTrue: [ ^ OutOfMemory signal ] ].
 	^ r
 
@@ -976,11 +970,11 @@ SimdJSONReader >> recover: failure flags: flags [
 	failure isNoCMemory ifTrue: [ ^ self cMemoryFailure ].
 	failure isNoMemory ifFalse: [ ^ self primitiveFailed ].
 	measure := self prim: flags budget: 0.
-	measure class == SimdJSONFailure ifTrue: [ ^ OutOfMemory signal ].
+	measure isSimdJSONFailure ifTrue: [ ^ OutOfMemory signal ].
 	(measure at: 1) = 1 ifFalse: [ ^ measure ].
 	self grow: (measure at: 6) + 1048576.
 	r := self prim: flags budget: -1.
-	r class == SimdJSONFailure ifTrue: [ ^ OutOfMemory signal ].
+	r isSimdJSONFailure ifTrue: [ ^ OutOfMemory signal ].
 	^ r
 
 ]

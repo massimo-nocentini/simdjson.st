@@ -9,9 +9,11 @@ They need libSimdJSONFFI, and are skipped without it; with the plugin in the VM,
 	SimdJSONFFIWriterTests   the tests of SimdJSONWriterTests, through the library
 	SimdJSONFFITests         the library, the decoder and the encoder: the tags of the
 	                         tapes, what sj_ffi_take and sj_ffi_take_output copy,
-	                         tickets, number texts, sources, WideStrings, holes,
-	                         culprits, the fallback, and the same values and texts as
-	                         the plugin's when the VM has it
+	                         tickets, number texts, sources, WideStrings, holes (the
+	                         instances of subclasses of the classes primitiveWrite
+	                         knows among them), culprits and their numbering, the
+	                         fallback, and the same values and texts as the plugin's
+	                         when the VM has it
 "
 Class {
 	#name : 'ManifestSimdJSONFFITests',

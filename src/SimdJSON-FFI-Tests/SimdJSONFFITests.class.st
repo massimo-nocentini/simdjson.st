@@ -271,9 +271,33 @@ SimdJSONFFITests >> testWideStrings [
 ]
 
 { #category : 'helpers' }
+SimdJSONFFITests >> write: anObject flags: flags maxDepth: depth [
+	"The answer of the library for anObject, at level 0; when the VM has the plugin, checked
+	 against primitiveWrite's: the same status, output, code and holes, the culprit and the
+	 objects of the holes identical"
+
+	| library plugin |
+	library := SimdJSONLibrary write: anObject flags: flags newLine: String lf level: 0 maxDepth: depth maxBytes: -1.
+	SimdJSONReader pluginAvailable ifFalse: [ ^ library ].
+	plugin := SimdJSONWriter
+		primWrite: anObject flags: flags newLine: String lf level: 0 maxDepth: depth maxBytes: -1
+		classes: SimdJSONWriter writeClasses layout: SimdJSONWriter writeLayout.
+	self assert: library first equals: plugin first.
+	self assert: (library at: 2) equals: (plugin at: 2).
+	self assert: (library at: 2) class equals: (plugin at: 2) class.
+	self assert: (library at: 3) isNil equals: (plugin at: 3) isNil.
+	(plugin at: 3) ifNotNil: [ :holes |
+		self assert: (library at: 3) size equals: holes size.
+		1 to: holes size do: [ :i | self assert: ((library at: 3) at: i) identicalTo: (holes at: i) ] ].
+	self assert: (library at: 4) equals: (plugin at: 4).
+	self assert: (library at: 5) identicalTo: (plugin at: 5).
+	^ library
+]
+
+{ #category : 'helpers' }
 SimdJSONFFITests >> writeValues [
 	"Values of every kind the walk writes, holes among them (which the writer writes as
-	NeoJSON does), and nested"
+	NeoJSON does: instances of subclasses of the classes the walk knows too), and nested"
 
 	| wide dictionary |
 	wide := self string: #( 16r20AC 16r41 16r1F600 9 34 ).
@@ -286,7 +310,9 @@ SimdJSONFFITests >> writeValues [
 		''. 'abc'. 'a"b\c/d' , (String with: Character tab with: (Character value: 1) with: (Character value: 127)). (self string: #( 16rE9 16rFF )). wide. #sym. #wide.
 		#(). #( 1 #( 2 #( 3 ) ) ). OrderedCollection new. (OrderedCollection withAll: #( 1 2 3 )) removeFirst; yourself.
 		Dictionary new. dictionary.
-		{ 1/2. Set with: 1. 2 ** 0.5. 3.25s2. Bag with: 'b'. OrderedDictionary new at: 'o' put: 1; yourself }.
+		{ 1/2. Set with: 1. 2 ** 0.5. 3.25s2. Bag with: 'b'. OrderedDictionary new at: 'o' put: 1; yourself.
+			IdentityDictionary new at: 'i' put: 1; yourself. SortedCollection withAll: #( 2 1 ). WeakArray with: 3.
+			WeakOrderedCollection with: 4. SimdJSONTestOwnList withAll: #( 5 ) }.
 		{ 1. { 2. 1/3 }. dictionary. 1 to: 3 } }
 ]
 
@@ -311,9 +337,124 @@ SimdJSONFFITests >> testWriteCulprits [
 	(library write: { 'ok'. WideString with: (Character value: 16r110000) } flags: 0 newLine: String lf level: 0 maxDepth: 1024 maxBytes: -1)
 		in: [ :r | self assert: r first equals: 2. self assert: (r at: 4) equals: 4. self assert: (r at: 5) class equals: WideString ].
 	(library write: (String new: 100 withAll: $a) flags: 0 newLine: String lf level: 0 maxDepth: 1024 maxBytes: 50)
-		in: [ :r | self assert: r first equals: 3 ].
-	self assert: (library write: 1 flags: 32 newLine: String lf level: 0 maxDepth: 1024 maxBytes: -1) ec equals: #'bad argument'.
-	self assert: (library write: 1 flags: 0 newLine: String lf level: -1 maxDepth: 1024 maxBytes: -1) ec equals: #'bad argument'
+		in: [ :r | self assert: r first equals: 3 ]
+]
+
+{ #category : 'tests - writing' }
+SimdJSONFFITests >> testWriteArguments [
+	"The library refuses the arguments that primitiveWrite refuses, with #'bad argument',
+	and accepts the ones at the limits: flags 0 to 31, level and maxDepth 0 to 100000,
+	maxBytes from -1, SmallIntegers, a newLine that is exactly a ByteString"
+
+	| refused accepted call |
+	call := [ :args :prim |
+		prim
+			ifTrue: [
+				SimdJSONWriter
+					primWrite: #( 1 ) flags: (args at: 1) newLine: (args at: 2) level: (args at: 3)
+					maxDepth: (args at: 4) maxBytes: (args at: 5)
+					classes: SimdJSONWriter writeClasses layout: SimdJSONWriter writeLayout ]
+			ifFalse: [
+				SimdJSONLibrary
+					write: #( 1 ) flags: (args at: 1) newLine: (args at: 2) level: (args at: 3)
+					maxDepth: (args at: 4) maxBytes: (args at: 5) ] ].
+	refused := {
+		{ 32. String lf. 0. 1024. -1 }. { -1. String lf. 0. 1024. -1 }. { nil. String lf. 0. 1024. -1 }.
+		{ 0. String lf. -1. 1024. -1 }. { 0. String lf. 100001. 1024. -1 }. { 0. String lf. 1 << 70. 1024. -1 }.
+		{ 0. String lf. 0. -1. -1 }. { 0. String lf. 0. 100001. -1 }. { 0. String lf. 0. 1.5. -1 }.
+		{ 0. String lf. 0. 1024. -2 }. { 0. String lf. 0. 1024. 1 << 70 }.
+		{ 0. #lf. 0. 1024. -1 }. { 0. String lf asWideString. 0. 1024. -1 }. { 0. nil. 0. 1024. -1 } }.
+	accepted := {
+		{ 0. String lf. 0. 0. -1 }. { 31. String lf. 0. 1024. -1 }. { 0. String lf. 100000. 100000. -1 }.
+		{ 0. ''. 0. 1024. 0 }. { 0. String crlf. 0. 1024. SmallInteger maxVal } }.
+	refused do: [ :args |
+		self assert: ((call value: args value: false) in: [ :r | r isSimdJSONFailure and: [ r ec = #'bad argument' ] ]).
+		SimdJSONReader pluginAvailable ifTrue: [
+			self assert: ((call value: args value: true) in: [ :r | r isSimdJSONFailure and: [ r ec = #'bad argument' ] ]) ] ].
+	accepted do: [ :args | | library |
+		library := call value: args value: false.
+		self deny: library isSimdJSONFailure.
+		SimdJSONReader pluginAvailable ifTrue: [ | plugin |
+			plugin := call value: args value: true.
+			self deny: plugin isSimdJSONFailure.
+			self assert: library first equals: plugin first.
+			self assert: (library at: 2) equals: (plugin at: 2).
+			self assert: (library at: 4) equals: (plugin at: 4) ] ]
+]
+
+{ #category : 'tests - writing' }
+SimdJSONFFITests >> testWriteExactClasses [
+	"An instance of a subclass of a class that primitiveWrite knows, or of the class of nil,
+	 true or false, is a hole, as for the plugin; as a key, it is not a string"
+
+	| values r key |
+	values := { IdentityDictionary new. SortedCollection new. WeakArray new: 1. True basicNew. UndefinedObject basicNew }.
+	r := self write: values flags: 4 maxDepth: 1024.
+	self assert: r first equals: 0.
+	self assert: (r at: 2) equals: '[,,,,]' asByteArray.
+	self assert: (r at: 3) size equals: 15.
+	values doWithIndex: [ :each :i |
+		self assert: ((r at: 3) at: 3 * i - 2) equals: i.
+		self assert: ((r at: 3) at: 3 * i - 1) identicalTo: each.
+		self assert: ((r at: 3) at: 3 * i) equals: 1 ].
+	key := KeyedTree new.
+	r := self write: (Dictionary new at: key put: 1; yourself) flags: 0 maxDepth: 1024.
+	self assert: r first equals: 2.
+	self assert: (r at: 4) equals: 1.
+	self assert: (r at: 5) identicalTo: key.
+	SimdJSONReader testHook: #pluginMissing value: true.
+	self
+		assert: (SimdJSONWriter toString: {
+			IdentityDictionary new at: 'i' put: 1; yourself. SortedCollection withAll: #( 2 1 ).
+			WeakArray with: 3. SimdJSONTestOwnList withAll: #( 5 ) })
+		equals: '[{"i":1},[1,2],[3],{"own":[5]}]'
+]
+
+{ #category : 'tests - writing' }
+SimdJSONFFITests >> testWriteDictionaryEntries [
+	"A Dictionary with an entry that is not exactly an Association (an instance of a
+	 subclass, added with add:) is a hole, as for the plugin, its keys and values not walked,
+	 also when the entries before it hold holes, NaNs and WideStrings: the hole before it is
+	 numbered first, and the writer writes it as a map"
+
+	| entryClass bad nan big entry r |
+	entryClass := Association newAnonymousSubclass.
+	bad := Dictionary new add: (entryClass key: 5 value: 1); yourself.
+	r := self write: { $x. bad } flags: 4 maxDepth: 1024.
+	self assert: r first equals: 0.
+	self assert: (r at: 2) equals: '[,]' asByteArray.
+	self assert: (r at: 3) size equals: 6.
+	self assert: ((r at: 3) at: 2) identicalTo: $x.
+	self assert: ((r at: 3) at: 5) identicalTo: bad.
+	nan := Dictionary new add: (entryClass key: 'a' value: Float nan); at: 'b' put: { 2 }; yourself.
+	r := self write: { 3 @ 4. nan } flags: 0 maxDepth: 1024.
+	self assert: r first equals: 0.
+	self assert: (r at: 3) size equals: 6.
+	self assert: ((r at: 3) at: 5) identicalTo: nan.
+	r := self write: { bad } flags: 0 maxDepth: 0.
+	self assert: r first equals: 2.
+	self assert: (r at: 5) identicalTo: bad.
+	big := Dictionary new.
+	1 to: 50 do: [ :i |
+		big at: i printString put: { 3 @ i. self string: #( 16r20AC ). String new: 3000 withAll: $a. Float nan } ].
+	entry := entryClass key: 'z' value: 1.
+	big add: entry.
+	self assert: (big array indexOf: entry) > (big array findFirst: [ :each | each notNil ]).
+	r := self write: { big. 1 / 2 } flags: 0 maxDepth: 1024.
+	self assert: r first equals: 0.
+	self assert: (r at: 2) equals: '[,]'.
+	self assert: (r at: 3) size equals: 6.
+	self assert: ((r at: 3) at: 2) identicalTo: big.
+	self assert: ((r at: 3) at: 5) equals: 1 / 2.
+	SimdJSONReader testHook: #pluginMissing value: true.
+	self
+		assert: (SimdJSONWriter toString: { Dictionary new add: (entryClass key: 'a' value: { 1 }); yourself })
+		equals: '[{"a":[1]}]'.
+	self
+		should: [ SimdJSONWriter toString: { $x. bad } ]
+		raise: SimdJSONMappingNotFound
+		withExceptionDo: [ :error |
+			self assert: error messageText equals: 'No mapping found for Character in SimdJSONWriter' ]
 ]
 
 { #category : 'tests - writing' }
@@ -352,6 +493,54 @@ SimdJSONFFITests >> testWriteLarge [
 	json := SimdJSONWriter toString: value.
 	self assert: json class equals: WideString.
 	self assert: (self readFFI: json) equals: value
+]
+
+{ #category : 'tests - writing' }
+SimdJSONFFITests >> testWriteNumbering [
+	"The immediates but SmallIntegers, and the Floats with floatHoles, are holes without the
+	 check of the depth; ByteSymbols and WideSymbols are strings, as keys too; the holes, the
+	 culprits, the NaNs and the WideStrings are numbered in the order of the walk, by which
+	 the library names the culprit"
+
+	| wide half point nan deep key r |
+	r := self write: { $a. 7. 1.0e300 } flags: 4 maxDepth: 0.
+	self assert: r first equals: 0.
+	self assert: (r at: 2) equals: '[,7,1.0e300]' asByteArray.
+	self assert: (r at: 3) asArray equals: { 1. $a. 1 }.
+	r := self write: { 1.5. 2.0e300 } flags: 16 maxDepth: 0.
+	self assert: r first equals: 0.
+	self assert: (r at: 3) asArray equals: #( 1 1.5 1 2 2.0e300 1 ).
+	half := 1 / 2.
+	r := self write: { half } flags: 4 maxDepth: 0.
+	self assert: r first equals: 2.
+	self assert: (r at: 4) equals: 3.
+	self assert: (r at: 5) identicalTo: half.
+	wide := self string: #( 16r20AC ).
+	self assert: wide asSymbol class equals: WideSymbol.
+	r := self write: { #b. wide asSymbol. Dictionary new at: #b put: 1; at: wide asSymbol put: 2; yourself } flags: 0 maxDepth: 1024.
+	self assert: r first equals: 0.
+	self assert: (r at: 3) isNil.
+	self assert: (((r at: 2) beginsWith: '["b","' , wide , '",{"') and: [ ((r at: 2) includesSubstring: '"b":1') and: [ (r at: 2) includesSubstring: '"' , wide , '":2' ] ]).
+	point := 3 @ 4.
+	r := self write: { half. wide. point. $c } flags: 4 maxDepth: 1024.
+	self assert: (r at: 2) equals: ('[,"' , wide , '",,]') utf8Encoded.
+	self assert: (r at: 3) size equals: 9.
+	{ half. point. $c } doWithIndex: [ :each :i | self assert: ((r at: 3) at: 3 * i - 1) identicalTo: each ].
+	nan := Float nan.
+	r := self write: { half. wide. point. $c. nan } flags: 0 maxDepth: 1024.
+	self assert: r first equals: 2.
+	self assert: (r at: 4) equals: 2.
+	self assert: (r at: 5) identicalTo: nan.
+	deep := { 'x' }.
+	r := self write: { half. wide. point. $c. { deep }. nan } flags: 0 maxDepth: 2.
+	self assert: r first equals: 2.
+	self assert: (r at: 4) equals: 3.
+	self assert: (r at: 5) identicalTo: deep first.
+	key := 4 @ 5.
+	r := self write: { half. wide. Dictionary new at: 'k' put: point; at: key put: 1; yourself } flags: 0 maxDepth: 1024.
+	self assert: r first equals: 2.
+	self assert: (r at: 4) equals: 1.
+	self assert: (r at: 5) identicalTo: key
 ]
 
 { #category : 'tests - writing' }

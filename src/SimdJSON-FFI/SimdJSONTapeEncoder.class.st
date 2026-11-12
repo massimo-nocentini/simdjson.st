@@ -1,7 +1,7 @@
 "
 I write the tape of a value for sj_ffi_write of libSimdJSONFFI (SimdJSONLibrary), which writes its JSON: 8-byte slots in pre-order, each value a header, payload << 8 | tag, then its data, and the code points of the WideStrings in a WordArray of their own (plugins/SimdJSONPlugin/include/ffi/sjFFI.h has the layout).
 
-I walk a value as primitiveWrite walks it: nil, Booleans, Integers, Floats, ByteString, ByteSymbol, WideString, WideSymbol, Array, OrderedCollection and Dictionary, of exactly these classes; any other object is a hole, which the image writes.  The holes, the keys that are not strings, the values deeper than maxDepth, the NaNs and infinities and the WideStrings are numbered in the order I meet them (objects), so that the library can name the culprit of an error, or the object of a hole, by its number.
+I walk a value as primitiveWrite walks it.  Each value answers simdJSONTapeOn:level: with my method for its kind (nullHeader, smallInteger:, float:, byteString:level:, array:level:, dictionary:level:...), and each key answers simdJSONTapeKeyOn:.  primitiveWrite knows nil, true, false and the instances of exactly SmallInteger, LargePositiveInteger, LargeNegativeInteger, SmallFloat64, BoxedFloat64, ByteString, ByteSymbol, WideString, WideSymbol, Array, OrderedCollection and Dictionary: their methods check that the receiver is exactly of their class (or nil, true, false itself) and pass any other instance to their superclass, up to ProtoObject's, which makes it a hole that the image writes; a Dictionary is a hole too when a slot of its array holds anything but nil or exactly an Association (isSimdJSONTapeEntry), and what I wrote of it is taken back.  The holes, the keys that are not strings, the values deeper than maxDepth, the NaNs and infinities and the WideStrings are numbered in the order I meet them (objects), so that the library can name the culprit of an error, or the object of a hole, by its number.
 "
 Class {
 	#name : 'SimdJSONTapeEncoder',
@@ -22,18 +22,29 @@ Class {
 }
 
 { #category : 'encoding' }
-SimdJSONTapeEncoder >> array: aCollection level: level [
+SimdJSONTapeEncoder >> array: anArray level: level [
+	"Each element, one level deeper"
 
 	| next |
-	self header: 4 payload: aCollection size.
+	level > maxDepth ifTrue: [ ^ self deep: anArray ].
+	self header: 4 payload: anArray size.
 	next := level + 1.
-	aCollection do: [ :each | self value: each level: next ]
+	1 to: anArray size do: [ :i | (anArray at: i) simdJSONTapeOn: self level: next ]
+
+]
+
+{ #category : 'encoding' }
+SimdJSONTapeEncoder >> badKey: aKey [
+	"A key that is not a string, the culprit of the error"
+
+	self header: 14 payload: (self number: aKey)
 
 ]
 
 { #category : 'encoding' }
 SimdJSONTapeEncoder >> byteString: aString [
-	"Its Latin-1 bytes, padded to 8"
+	"Its Latin-1 bytes, padded to 8, without the check of the depth (a key); byteString:level:
+	repeats me, one send fewer per string value, and changes with me"
 
 	| n |
 	n := aString size.
@@ -45,15 +56,52 @@ SimdJSONTapeEncoder >> byteString: aString [
 ]
 
 { #category : 'encoding' }
-SimdJSONTapeEncoder >> dictionary: aDictionary level: level [
+SimdJSONTapeEncoder >> byteString: aString level: level [
+	"As byteString:, after the check of the depth; inline, one send fewer per string"
 
+	| n |
+	level > maxDepth ifTrue: [ ^ self deep: aString ].
+	n := aString size.
+	position + n > limit ifTrue: [ self reserve: n + 16 ].
+	tape int64AtOffset: position put: (n bitShift: 8) + 2.
+	n > 0 ifTrue: [ tape replaceFrom: position + 9 to: position + 8 + n with: aString startingAt: 1 ].
+	position := position + 8 + (n + 7 bitAnd: -8)
+
+]
+
+{ #category : 'private' }
+SimdJSONTapeEncoder >> deep: anObject [
+	"The culprit of a value deeper than maxDepth"
+
+	self header: 15 payload: (self number: anObject)
+
+]
+
+{ #category : 'encoding' }
+SimdJSONTapeEncoder >> dictionary: aDictionary level: level [
+	"Each key, then its value, one level deeper, in the order of the slots of its array, as
+	primitiveWrite; a hole, as there, when a slot that is not empty is not isSimdJSONTapeEntry
+	(an instance of a subclass of Association, added with add:).  primitiveWrite checks the
+	slots first; I check each one as I walk, and on such a slot take back what I wrote of
+	aDictionary, and the objects I numbered in it, in one pass"
+
+	| array next start startWords numbered |
+	level > maxDepth ifTrue: [ ^ self deep: aDictionary ].
+	array := aDictionary array.
+	start := position.
+	startWords := wordPosition.
+	numbered := objects ifNil: [ 0 ] ifNotNil: [ objects size ].
 	self header: 5 payload: aDictionary size.
-	aDictionary associationsDo: [ :association | | key |
-		key := association key.
-		key class == ByteString
-			ifTrue: [ self byteString: key ]
-			ifFalse: [ self key: key ].
-		self value: association value level: level + 1 ]
+	next := level + 1.
+	1 to: array size do: [ :i |
+		(array at: i) ifNotNil: [ :association |
+			association isSimdJSONTapeEntry ifFalse: [
+				position := start.
+				wordPosition := startWords.
+				objects ifNotNil: [ objects removeLast: objects size - numbered ].
+				^ self hole: aDictionary ].
+			association key simdJSONTapeKeyOn: self.
+			association value simdJSONTapeOn: self level: next ] ]
 
 ]
 
@@ -78,14 +126,24 @@ SimdJSONTapeEncoder >> encode: anObject level: level maxDepth: depth floatHoles:
 	wordPosition := 0.
 	maxDepth := depth.
 	floatHoles := aBoolean.
-	self value: anObject level: level
+	anObject simdJSONTapeOn: self level: level
+
+]
+
+{ #category : 'encoding' }
+SimdJSONTapeEncoder >> falseHeader [
+	"false, in the header"
+
+	self header: 8 payload: 0
 
 ]
 
 { #category : 'encoding' }
 SimdJSONTapeEncoder >> float: aFloat [
-	"The number of a NaN or an infinity in the payload, which the library may name"
+	"A hole with floatHoles; the number of a NaN or an infinity in the payload, which the
+	library may name"
 
+	floatHoles ifTrue: [ ^ self hole: aFloat ].
 	self header: 3 payload: (aFloat isFinite ifTrue: [ 0 ] ifFalse: [ self number: aFloat ]).
 	tape float64AtOffset: position put: aFloat.
 	position := position + 8
@@ -103,17 +161,29 @@ SimdJSONTapeEncoder >> header: tag payload: anInteger [
 ]
 
 { #category : 'encoding' }
-SimdJSONTapeEncoder >> integer: anInteger [
-	"A SmallInteger in the header, or in a slot of its own; a LargeInteger as the bytes of
-	its magnitude, least significant first, padded to 8"
+SimdJSONTapeEncoder >> hole: anObject [
+	"Written by the image; without the check of the depth (an immediate, a Float with
+	floatHoles)"
+
+	self header: 13 payload: (self number: anObject)
+
+]
+
+{ #category : 'encoding' }
+SimdJSONTapeEncoder >> hole: anObject level: level [
+	"Written by the image, after the check of the depth"
+
+	level > maxDepth ifTrue: [ ^ self deep: anObject ].
+	self hole: anObject
+
+]
+
+{ #category : 'encoding' }
+SimdJSONTapeEncoder >> largeInteger: anInteger level: level [
+	"The bytes of its magnitude, least significant first, padded to 8"
 
 	| n |
-	anInteger class == SmallInteger ifTrue: [
-		(anInteger > -4503599627370496 and: [ anInteger < 4503599627370496 ])
-			ifTrue: [ ^ self header: 1 payload: anInteger ].
-		self header: 9 payload: 0.
-		tape int64AtOffset: position put: anInteger.
-		^ position := position + 8 ].
+	level > maxDepth ifTrue: [ ^ self deep: anInteger ].
 	n := anInteger size.
 	self header: (anInteger negative ifTrue: [ 17 ] ifFalse: [ 16 ]) payload: n.
 	self reserve: n + 7.
@@ -123,14 +193,10 @@ SimdJSONTapeEncoder >> integer: anInteger [
 ]
 
 { #category : 'encoding' }
-SimdJSONTapeEncoder >> key: aKey [
-	"A string, without the check of the depth, as primitiveWrite writes a key"
+SimdJSONTapeEncoder >> nullHeader [
+	"null, in the header"
 
-	| class |
-	class := aKey class.
-	(class == ByteString or: [ class == ByteSymbol ]) ifTrue: [ ^ self byteString: aKey ].
-	(class == WideString or: [ class == WideSymbol ]) ifTrue: [ ^ self wideString: aKey ].
-	self header: 14 payload: (self number: aKey)
+	self header: 6 payload: 0
 
 ]
 
@@ -148,6 +214,18 @@ SimdJSONTapeEncoder >> objects [
 	"The objects numbered, in order (nil without any)"
 
 	^ objects
+
+]
+
+{ #category : 'encoding' }
+SimdJSONTapeEncoder >> orderedCollection: aCollection level: level [
+	"As array:level:, each element one level deeper"
+
+	| next |
+	level > maxDepth ifTrue: [ ^ self deep: aCollection ].
+	self header: 4 payload: aCollection size.
+	next := level + 1.
+	aCollection do: [ :each | each simdJSONTapeOn: self level: next ]
 
 ]
 
@@ -172,6 +250,20 @@ SimdJSONTapeEncoder >> reserve: n [
 
 ]
 
+{ #category : 'encoding' }
+SimdJSONTapeEncoder >> smallInteger: anInteger [
+	"In the header, or in a slot of its own beyond 52 bits"
+
+	(anInteger > -4503599627370496 and: [ anInteger < 4503599627370496 ]) ifTrue: [
+		position > limit ifTrue: [ self reserve: 16 ].
+		tape int64AtOffset: position put: (anInteger bitShift: 8) + 1.
+		^ position := position + 8 ].
+	self header: 9 payload: 0.
+	tape int64AtOffset: position put: anInteger.
+	position := position + 8
+
+]
+
 { #category : 'accessing' }
 SimdJSONTapeEncoder >> tape [
 
@@ -180,41 +272,10 @@ SimdJSONTapeEncoder >> tape [
 ]
 
 { #category : 'encoding' }
-SimdJSONTapeEncoder >> value: anObject level: level [
-	"primitiveWrite's writeValue: the classes it knows exactly, the depth checked for an
-	object that is neither immediate nor a Float, any other object a hole.  The most
-	frequent classes are tested first; the classes are disjoint, so the order does not
-	change what is written"
+SimdJSONTapeEncoder >> trueHeader [
+	"true, in the header"
 
-	| class |
-	class := anObject class.
-	class == ByteString ifTrue: [
-		level > maxDepth ifTrue: [ ^ self header: 15 payload: (self number: anObject) ].
-		^ self byteString: anObject ].
-	class == SmallInteger ifTrue: [
-		(anObject > -4503599627370496 and: [ anObject < 4503599627370496 ]) ifTrue: [
-			position > limit ifTrue: [ self reserve: 16 ].
-			tape int64AtOffset: position put: (anObject bitShift: 8) + 1.
-			^ position := position + 8 ].
-		^ self integer: anObject ].
-	anObject == nil ifTrue: [ ^ self header: 6 payload: 0 ].
-	class == Dictionary ifTrue: [
-		level > maxDepth ifTrue: [ ^ self header: 15 payload: (self number: anObject) ].
-		^ self dictionary: anObject level: level ].
-	(class == SmallFloat64 or: [ class == BoxedFloat64 ]) ifTrue: [
-		floatHoles ifTrue: [ ^ self header: 13 payload: (self number: anObject) ].
-		^ self float: anObject ].
-	(class == Array or: [ class == OrderedCollection ]) ifTrue: [
-		level > maxDepth ifTrue: [ ^ self header: 15 payload: (self number: anObject) ].
-		^ self array: anObject level: level ].
-	anObject == true ifTrue: [ ^ self header: 7 payload: 0 ].
-	anObject == false ifTrue: [ ^ self header: 8 payload: 0 ].
-	anObject isImmediateObject ifTrue: [ ^ self header: 13 payload: (self number: anObject) ].
-	level > maxDepth ifTrue: [ ^ self header: 15 payload: (self number: anObject) ].
-	class == ByteSymbol ifTrue: [ ^ self byteString: anObject ].
-	(class == WideString or: [ class == WideSymbol ]) ifTrue: [ ^ self wideString: anObject ].
-	(class == LargePositiveInteger or: [ class == LargeNegativeInteger ]) ifTrue: [ ^ self integer: anObject ].
-	self header: 13 payload: (self number: anObject)
+	self header: 7 payload: 0
 
 ]
 
@@ -234,6 +295,15 @@ SimdJSONTapeEncoder >> wideString: aString [
 		words := grown ].
 	n > 0 ifTrue: [ words replaceFrom: wordPosition + 1 to: wordPosition + n with: aString startingAt: 1 ].
 	wordPosition := wordPosition + n
+
+]
+
+{ #category : 'encoding' }
+SimdJSONTapeEncoder >> wideString: aString level: level [
+	"As wideString:, after the check of the depth"
+
+	level > maxDepth ifTrue: [ ^ self deep: aString ].
+	self wideString: aString
 
 ]
 

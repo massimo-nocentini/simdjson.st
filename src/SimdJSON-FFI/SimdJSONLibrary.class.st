@@ -20,15 +20,27 @@ Class {
 	#tag : 'Library'
 }
 
-{ #category : 'private' }
-SimdJSONLibrary class >> encodingOf: source [
-	"SJ_ENC_UTF8 (a ByteArray), SJ_ENC_LATIN1 (a ByteString) or SJ_ENC_UTF32 (a
-	WideString), of sjBridge.h"
+{ #category : 'encodings' }
+SimdJSONLibrary class >> encodingLatin1 [
+	"SJ_ENC_LATIN1 of sjBridge.h: a ByteString, in place"
 
-	source class == ByteArray ifTrue: [ ^ 0 ].
-	^ source isWideString
-		ifTrue: [ 2 ]
-		ifFalse: [ 1 ]
+	^ 1
+
+]
+
+{ #category : 'encodings' }
+SimdJSONLibrary class >> encodingUTF32 [
+	"SJ_ENC_UTF32 of sjBridge.h: a WideString, in place"
+
+	^ 2
+
+]
+
+{ #category : 'encodings' }
+SimdJSONLibrary class >> encodingUTF8 [
+	"SJ_ENC_UTF8 of sjBridge.h: a ByteArray, in place"
+
+	^ 0
 
 ]
 
@@ -239,7 +251,7 @@ SimdJSONLibrary >> read: source from: start to: stop flags: flags maxUnits: maxU
 	| rc status tape offset count next words decoder result |
 	[
 		rc := self
-			primRead: source encoding: (self class encodingOf: source) units: source size
+			primRead: source encoding: source simdJSONEncoding units: source size
 			start0: start - 1 stop0: stop flags: flags maxUnits: maxUnits
 			buffer: buffer capacity: buffer size.
 		rc = -2 ifTrue: [ ^ SimdJSONFailure on: #'insufficient C memory' ].
@@ -334,24 +346,22 @@ SimdJSONLibrary >> takeWords: count [
 
 { #category : 'private' }
 SimdJSONLibrary >> passable: source [
-	"source, or a copy that the FFI passes as a pointer: a String of another class than
-	ByteString and WideString (a Symbol) is copied, in characters"
+	"source, or a copy that the FFI passes as a pointer, with its simdJSONEncoding: a String
+	of another class than ByteString and WideString (a Symbol) is copied, in characters
+	(its simdJSONPassableCopy)"
 
-	(source class == ByteString or: [ source class == ByteArray or: [ source class == WideString ] ])
-		ifTrue: [ ^ source ].
-	^ (source isWideString
-		ifTrue: [ WideString ]
-		ifFalse: [ ByteString ]) withAll: source
+	source simdJSONEncoding ifNotNil: [ ^ source ].
+	^ source simdJSONPassableCopy
 
 ]
 
 { #category : 'private' }
 SimdJSONLibrary >> refusalOf: source from: start to: stop flags: flags maxUnits: maxUnits [
 	"nil, or the error code that primitiveRead fails with for these arguments, in its order:
-	the source a String or a ByteArray, the numbers integers, start..stop in it, and not
-	both flagDict and flagSymbolKeys"
+	the source a String or a ByteArray (its simdJSONSourceKind), the numbers integers,
+	start..stop in it, and not both flagDict and flagSymbolKeys"
 
-	(source class == ByteArray or: [ source isString ]) ifFalse: [ ^ #'bad argument' ].
+	source simdJSONSourceKind ifNil: [ ^ #'bad argument' ].
 	((start isInteger and: [ stop isInteger ])
 		and: [ (flags isInteger and: [ flags >= 0 ])
 		and: [ maxUnits isInteger and: [ maxUnits >= -1 ] ] ])
@@ -366,13 +376,16 @@ SimdJSONLibrary >> refusalOf: source from: start to: stop flags: flags maxUnits:
 SimdJSONLibrary >> write: anObject flags: flags newLine: aByteString level: level maxDepth: depth maxBytes: maxBytes [
 	"The JSON of anObject, as SimdJSONWriter class>>primWrite:... answers it: { status.
 	output. holes. code. culprit }, or a SimdJSONFailure; arguments that primitiveWrite
-	refuses fail with #'bad argument'"
+	refuses fail with #'bad argument', as primitiveWrite checks them: SmallIntegers, level
+	and depth up to 100000, and aByteString passed in place as Latin-1, exactly a ByteString"
 
 	| buffer encoder |
 	(flags isInteger and: [ flags between: 0 and: 31 ]) ifFalse: [ ^ SimdJSONFailure on: #'bad argument' ].
-	(level isInteger and: [ level >= 0 and: [ depth isInteger and: [ maxBytes isInteger and: [ maxBytes >= -1 ] ] ] ])
-		ifFalse: [ ^ SimdJSONFailure on: #'bad argument' ].
-	aByteString class == ByteString ifFalse: [ ^ SimdJSONFailure on: #'bad argument' ].
+	((level isInteger and: [ level between: 0 and: 100000 ])
+		and: [ (depth isInteger and: [ depth between: 0 and: 100000 ])
+		and: [ maxBytes isInteger and: [ maxBytes between: -1 and: SmallInteger maxVal ] ] ])
+			ifFalse: [ ^ SimdJSONFailure on: #'bad argument' ].
+	aByteString simdJSONEncoding = self class encodingLatin1 ifFalse: [ ^ SimdJSONFailure on: #'bad argument' ].
 	buffer := Scratch.
 	Scratch := nil.
 	buffer ifNil: [ buffer := ByteArray new: self class scratchSize ].

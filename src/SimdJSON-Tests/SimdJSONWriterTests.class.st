@@ -256,6 +256,22 @@ SimdJSONWriterTests >> testNonFinite [
 ]
 
 { #category : 'tests - objects' }
+SimdJSONWriterTests >> testOtherObjectsByClass [
+	"The class of a value chooses how the image writes it, as NeoJSON's neoJsonOn:, not its
+	isDictionary or isCollection"
+
+	| duck |
+	duck := SimdJSONTestDuckDictionary new.
+	self should: [ self write: duck ] raise: SimdJSONMappingNotFound.
+	self should: [ self write: { 1. duck } ] raise: SimdJSONMappingNotFound.
+	self
+		should: [ SimdJSONWriter toString: (Dictionary new at: 'd' put: duck; yourself) ]
+		raise: SimdJSONMappingNotFound
+		withExceptionDo: [ :error |
+			self assert: error messageText equals: 'No mapping found for SimdJSONTestDuckDictionary in SimdJSONWriter' ]
+]
+
+{ #category : 'tests - objects' }
 SimdJSONWriterTests >> testOtherObjects [
 	"What the plugin leaves to the image, written as NeoJSONWriter writes it"
 
@@ -334,6 +350,53 @@ SimdJSONWriterTests >> testPrettyHoles [
 		equals: '{' , lf , tab , '"a" : [' , lf , tab , tab , '0.5' , lf , tab , ']' , lf , '}'.
 	self assert: (writer stringFor: Set new) equals: '[ ]'.
 	self assert: (writer stringFor: { OrderedDictionary new }) equals: '[' , lf , tab , '{ }' , lf , ']'
+]
+
+{ #category : 'tests - objects' }
+SimdJSONWriterTests >> testProxies [
+	"A proxy is a hole, written as the class of the object it stands for chooses, but with
+	 the mapping of its own class, nil, true and false among them"
+
+	| proxy |
+	proxy := [ :each | SimdJSONTestProxy on: each ].
+	self
+		assert: (self write: {
+			proxy value: 'a'. proxy value: #b. proxy value: 2. proxy value: 2 ** 70. proxy value: 1 / 2.
+			proxy value: #( 1 ). proxy value: (OrderedCollection with: (proxy value: 3)).
+			proxy value: (Dictionary new at: 'k' put: 1; yourself) })
+		equals: '["a","b",2,1180591620717411303424,0.5,[1],[3],{"k":1}]'.
+	{ nil. true. false. 3 @ 4. $c } do: [ :each |
+		self
+			should: [ self write: { 1. proxy value: each } ]
+			raise: SimdJSONMappingNotFound
+			withExceptionDo: [ :error |
+				self assert: error messageText equals: 'No mapping found for SimdJSONTestProxy in SimdJSONWriter' ] ]
+]
+
+{ #category : 'tests - output' }
+SimdJSONWriterTests >> testProxyStreams [
+	"A proxy of a stream gets the JSON itself; a proxy of a ZnCharacterWriteStream of UTF-8
+	gives its binary stream, as the stream would; a ZnCharacterWriteStream with a proxy of
+	an encoder gets the characters, which it encodes with the proxy"
+
+	| stream proxy writer bytes |
+	stream := WriteStream on: String new.
+	proxy := SimdJSONTestProxy on: stream.
+	writer := SimdJSONWriter on: proxy.
+	self assert: (writer instVarNamed: 'sink') == proxy.
+	writer nextPut: #( 1 'a' ).
+	self assert: stream contents equals: '[1,"a"]'.
+	bytes := WriteStream on: ByteArray new.
+	writer := SimdJSONWriter on: (SimdJSONTestProxy on: (ZnCharacterWriteStream on: bytes)).
+	self assert: (writer instVarNamed: 'sink') == bytes.
+	writer nextPut: { self string: #( 233 ) }.
+	self assert: bytes contents equals: #[ 91 34 195 169 34 93 ].
+	bytes := WriteStream on: ByteArray new.
+	stream := (ZnCharacterWriteStream on: bytes) encoder: (SimdJSONTestProxy on: ZnUTF8Encoder new); yourself.
+	writer := SimdJSONWriter on: stream.
+	self assert: (writer instVarNamed: 'sink') == stream.
+	writer nextPut: { self string: #( 233 ) }.
+	self assert: bytes contents equals: #[ 91 34 195 169 34 93 ]
 ]
 
 { #category : 'tests - values' }

@@ -434,8 +434,8 @@ SimdJSONReaderTests >> testNumberTextInContainers [
 
 { #category : 'tests - sources' }
 SimdJSONReaderTests >> testOtherStreams [
-	"Streams that are not a ReadStream on a String or a ByteArray are read to their end
-	 first"
+	"Streams that are not exactly a ReadStream on a String or a ByteArray, a proxy of one
+	 among them or a ReadStream on a proxy, are read to their end first"
 
 	| stream reader |
 	stream := ReadWriteStream on: String new.
@@ -446,7 +446,20 @@ SimdJSONReaderTests >> testOtherStreams [
 	self assert: reader next equals: 3.
 	self assert: reader atEnd.
 	stream := ZnCharacterReadStream on: ('["' , (self string: #( 16r20AC )) , '"]') utf8Encoded readStream.
-	self assert: (SimdJSONReader on: stream) next equals: { self string: #( 16r20AC ) }
+	self assert: (SimdJSONReader on: stream) next equals: { self string: #( 16r20AC ) }.
+	stream := '1 [2]' readStream.
+	reader := SimdJSONReader on: (SimdJSONTestProxy on: stream).
+	self assert: reader next equals: 1.
+	self assert: stream atEnd.
+	self assert: reader next equals: #( 2 ).
+	self assert: reader atEnd.
+	self
+		assert: (SimdJSONReader on: (ReadStream on: (SimdJSONTestProxy on: '[1,2]' utf8Encoded))) next
+		equals: #( 1 2 ).
+	self assert: (SimdJSONReader on: (ReadStream on: (SimdJSONTestProxy on: '[1,2]'))) next equals: #( 1 2 ).
+	self
+		assert: (SimdJSONReader on: (ReadStream on: (SimdJSONTestProxy on: '["' , (self string: #( 16r20AC )) , '"]'))) next
+		equals: { self string: #( 16r20AC ) }
 ]
 
 { #category : 'tests - plugin' }
@@ -526,20 +539,20 @@ SimdJSONReaderTests >> testPrimitiveErrorsAndFailures [
 	self assert: (result at: 3) equals: 1.
 	self assert: (result at: 6) > 0.
 	result := self prim: '{}' flags: 12 budget: -1.
-	self assert: (result isKindOf: SimdJSONFailure).
+	self assert: result isSimdJSONFailure.
 	self assert: result ec equals: #'bad argument'.
 	result := self prim: '[1]' from: 10 to: 3 flags: 0 budget: -1 maxUnits: -1.
-	self assert: (result isKindOf: SimdJSONFailure).
+	self assert: result isSimdJSONFailure.
 	self assert: result ec equals: #'bad index'.
 	result := self prim: Object new from: 1 to: 0 flags: 0 budget: -1 maxUnits: -1.
-	self assert: (result isKindOf: SimdJSONFailure).
+	self assert: result isSimdJSONFailure.
 	self assert: result ec equals: #'bad argument'.
 	result := self prim: '[1]' from: 1 to: 3 flags: 0 budget: -1 maxUnits: -2.
-	self assert: (result isKindOf: SimdJSONFailure).
+	self assert: result isSimdJSONFailure.
 	self assert: result ec equals: #'bad argument'.
 	"isBytes is true of a CompiledMethod, whose bytecodes the VM gives no pointer to"
 	result := self prim: Object >> #printString from: 1 to: 5 flags: 0 budget: -1 maxUnits: -1.
-	self assert: (result isKindOf: SimdJSONFailure).
+	self assert: result isSimdJSONFailure.
 	self assert: result ec equals: #'bad argument'
 ]
 

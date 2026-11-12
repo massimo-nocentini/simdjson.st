@@ -46,6 +46,14 @@ SimdJSONFailure >> isNoMemory [
 ]
 
 { #category : 'testing' }
+SimdJSONFailure >> isSimdJSONFailure [
+	"Whether I am the SimdJSONFailure that a primitive failed with: I am"
+
+	^ true
+
+]
+
+{ #category : 'testing' }
 SimdJSONFailure >> isUnavailable [
 	"The module could not be loaded, or it has no such primitive"
 

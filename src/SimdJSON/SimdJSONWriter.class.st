@@ -14,7 +14,6 @@ Class {
 		'binary',
 		'classes',
 		'layout',
-		'plainClasses',
 		'ownWriters'
 	],
 	#classVars : [
@@ -94,15 +93,6 @@ SimdJSONWriter class >> on: aWriteStream [
 
 ]
 
-{ #category : 'configuration' }
-SimdJSONWriter class >> plainClasses [
-	"The classes whose instances primitiveWrite writes itself"
-
-	^ (self writeClasses copyWithout: Association) ,
-		{ ByteString. Array. LargePositiveInteger. LargeNegativeInteger. BoxedFloat64. SmallFloat64 }
-
-]
-
 { #category : 'primitives' }
 SimdJSONWriter class >> primWrite: value flags: flags newLine: aByteString level: level maxDepth: depth maxBytes: bytes
 		classes: classes layout: layout [
@@ -140,7 +130,9 @@ SimdJSONWriter class >> toStringPretty: anObject [
 
 { #category : 'configuration' }
 SimdJSONWriter class >> writeClasses [
-	"The classes that primitiveWrite knows besides those of the VM's proxy"
+	"The classes that primitiveWrite knows besides those of the VM's proxy.  The exact
+	classes it writes are listed again, one method each, by the isSimdJSONPlain of this
+	package and the simdJSONTapeOn:level: of SimdJSON-FFI: they change with it"
 
 	^ { ByteSymbol. WideString. WideSymbol. Dictionary. Association. OrderedCollection }
 
@@ -327,11 +319,10 @@ SimdJSONWriter >> initialize [
 
 { #category : 'private' }
 SimdJSONWriter >> isPlain: anObject [
-	"Whether the plugin writes anObject itself: an instance of one of plainClasses, but a
-	Float when there is a floatPrinter"
+	"Whether the plugin writes anObject itself (its isSimdJSONPlain), but a Float when there
+	is a floatPrinter"
 
-	^ (self plainClasses includes: anObject class)
-		and: [ floatPrinter isNil or: [ anObject isFloat not ] ]
+	^ anObject isSimdJSONPlain and: [ floatPrinter isNil or: [ anObject isFloat not ] ]
 
 ]
 
@@ -419,12 +410,12 @@ SimdJSONWriter >> nonFiniteAsNull: aBoolean [
 
 { #category : 'initialize-release' }
 SimdJSONWriter >> on: aWriteStream [
-	"Write on aWriteStream, which close closes; the JSON goes to its binary stream when it
-	encodes UTF-8 with Zinc, so that it is not encoded twice"
+	"Write on aWriteStream, which close closes; the JSON goes to its simdJSONSink, the binary
+	stream when it encodes UTF-8 with Zinc, so that it is not encoded twice, and in bytes to
+	any sink that answers isBinary true"
 
-	writeStream := sink := aWriteStream.
-	((aWriteStream isKindOf: ZnCharacterWriteStream) and: [ aWriteStream encoder class == ZnUTF8Encoder ])
-		ifTrue: [ sink := aWriteStream wrappedStream ].
+	writeStream := aWriteStream.
+	sink := aWriteStream simdJSONSink.
 	binary := (sink respondsTo: #isBinary) and: [ sink isBinary ]
 
 ]
@@ -452,12 +443,6 @@ SimdJSONWriter >> output: anObject bytes: aBoolean [
 
 ]
 
-{ #category : 'private' }
-SimdJSONWriter >> plainClasses [
-	^ plainClasses ifNil: [ plainClasses := self class plainClasses asIdentitySet ]
-
-]
-
 { #category : 'initialize-release' }
 SimdJSONWriter >> prettyPrint: aBoolean [
 	"Newlines and a tab per level, and a space around the colon of a key, as NeoJSONWriter"
@@ -480,12 +465,13 @@ SimdJSONWriter >> prim: anObject bytes: aBoolean [
 	| flags r |
 	flags := self flagsBytes: aBoolean.
 	r := self callPrim: anObject flags: flags.
-	(r class ~~ SimdJSONFailure and: [ (r at: 1) = 1 ]) ifTrue: [
+	r isSimdJSONFailure ifTrue: [ ^ self failed: r ].
+	(r at: 1) = 1 ifTrue: [
 		SimdJSONReader count: #grows.
 		Smalltalk growMemoryByAtLeast: (r at: 4) + 1048576.
 		r := self callPrim: anObject flags: flags.
-		(r class ~~ SimdJSONFailure and: [ (r at: 1) = 1 ]) ifTrue: [ ^ OutOfMemory signal ] ].
-	r class == SimdJSONFailure ifTrue: [ ^ self failed: r ].
+		r isSimdJSONFailure ifTrue: [ ^ self failed: r ].
+		(r at: 1) = 1 ifTrue: [ ^ OutOfMemory signal ] ].
 	(r at: 1) = 2 ifTrue: [ ^ self signalError: (r at: 4) culprit: (r at: 5) ].
 	(r at: 1) = 3 ifTrue: [
 		^ SimdJSONResourceError new code: #tooLarge; signal: 'the JSON exceeds SimdJSONWriter maxOutputBytes; raise it' ].
@@ -602,19 +588,15 @@ SimdJSONWriter >> writeObject: anObject [
 
 { #category : 'private' }
 SimdJSONWriter >> writeOther: anObject [
-	"NeoJSON's neoJsonOn: of anObject, which the plugin does not write: nil, Booleans and
-	SmallIntegers, any other Number as a Float, any other String, dictionaries as maps, any
-	other collection as a list, and any other object with its mapping"
+	"NeoJSON's neoJsonOn: of anObject, which the plugin does not write: its own, or what
+	anObject answers to simdJSONWriteOn: (nil, Booleans and SmallIntegers, any other Number
+	as a Float, any other String, dictionaries as maps, any other collection as a list, and
+	any other object with the mapping of its class).  As with neoJsonOn:, the class of
+	anObject chooses, not its isDictionary, isCollection or isNumber; for a proxy, the class
+	of the object it stands for, but the mapping of its own (ProtoObject>>simdJSONWriteOn:)"
 
 	(self hasOwnWriter: anObject) ifTrue: [ ^ anObject neoJsonOn: self ].
-	anObject ifNil: [ ^ self writeNull ].
-	(anObject == true or: [ anObject == false ]) ifTrue: [ ^ self writeBoolean: anObject ].
-	anObject isInteger ifTrue: [ ^ self writeInteger: anObject ].
-	anObject isNumber ifTrue: [ ^ self writeFloat: anObject asFloat ].
-	(anObject isKindOf: String) ifTrue: [ ^ self writeString: anObject ].
-	anObject isDictionary ifTrue: [ ^ self writeMap: anObject ].
-	anObject isCollection ifTrue: [ ^ self writeList: anObject ].
-	^ self writeObject: anObject
+	^ anObject simdJSONWriteOn: self
 
 ]
 
@@ -639,7 +621,7 @@ SimdJSONWriter >> writeStreamingDo: aBlock [
 SimdJSONWriter >> writeString: aString [
 	"Escaped by the plugin, as NeoJSONWriter escapes"
 
-	self writePlain: ((self plainClasses includes: aString class)
+	self writePlain: (aString isSimdJSONPlain
 		ifTrue: [ aString ]
 		ifFalse: [ String withAll: aString ])
 

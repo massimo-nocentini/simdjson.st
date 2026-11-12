@@ -17,7 +17,8 @@ SimdJSONMemoryTests >> setUp [
 SimdJSONMemoryTests >> heapBytesOf: anObject [
 	"The bytes of anObject and of everything it holds that primitiveRead allocates: the
 	 need that the plugin measures against the byte bound 32 x B + 4096 (docs/SimdJSON.md,
-	 Memory and limits), counted by the image"
+	 Memory and limits), counted by the image; the exact classes that primitiveRead
+	 allocates are what it counts"
 
 	| bytes |
 	(anObject isNil or: [ anObject == true or: [ anObject == false ] ]) ifTrue: [ ^ 0 ].
