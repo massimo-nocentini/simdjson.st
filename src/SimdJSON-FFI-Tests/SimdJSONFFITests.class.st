@@ -217,6 +217,62 @@ SimdJSONFFITests >> testSources [
 ]
 
 { #category : 'tests' }
+SimdJSONFFITests >> testSourcesAsThePlugin [
+	"The library reads, refuses and decodes every source as primitiveRead: exactly a
+	 ByteArray as UTF-8, any other byte object as Latin-1, any 32-bit word object as UTF-32,
+	 copied by its format rather than passed by its own tfPointerAddress, of a class rooted
+	 at ProtoObject too; and refuses the numbers beyond the SmallIntegers, and the proxies of
+	 SmallIntegers, as it does"
+
+	| eacute euro integer sources plugin library large |
+	SimdJSONReader pluginAvailable ifFalse: [ ^ self skip: 'no SimdJSONPlugin to compare with' ].
+	eacute := self string: #( 16rE9 ).
+	euro := self string: #( 16r20AC ).
+	integer := self integerOfBytes: '[1]      '.
+	sources := {
+		('["', euro, '"]') utf8Encoded. '["', eacute, '"]'. ('["', eacute, '"]') asSymbol.
+		('["', euro, '"]') asSymbol. self externalAddress: #[ 91 34 16rC3 16rA9 34 93 32 32 ].
+		ExternalAddress new. integer. integer negated. self words: '{"a":"', euro, '"} [2]'.
+		WordArray withAll: #( 34 16rD800 34 ). WordArray new. Bitmap withAll: #( 91 49 93 ).
+		IntegerArray withAll: #( 34 -1 34 ). 1.0e300. DoubleWordArray new: 2. DoubleByteArray new: 2.
+		Object >> #printString. Object new. nil. 42. '[1]' asText.
+		self outsideObject: SimdJSONTestProtoBytes of: '["', eacute, '"]'.
+		self outsideObject: SimdJSONTestProtoWords of: '["', euro, '"]'.
+		SimdJSONTestProxy on: '[1]'. SimdJSONTestProxy on: '[1]' utf8Encoded }.
+	sources do: [ :source | | units |
+		units := thisContext objectSize: source.
+		{ 1 -> units. 1 -> 0. 2 -> units. (units + 2) -> units } do: [ :range |
+			#( 0 1 2 4 8 ) do: [ :flags |
+				plugin := (flags anyMask: 4)
+					ifTrue: [
+						SimdJSONReader
+							primRead: source from: range key to: range value flags: flags budget: -1 maxUnits: -1
+							objectClass: Dictionary associationClass: Association wideStringClass: WideString
+							hashSeed: ByteString hash dictLayout: SimdJSONReader dictLayout ]
+					ifFalse: [ self prim: source from: range key to: range value flags: flags budget: -1 maxUnits: -1 ].
+				library := SimdJSONLibrary read: source from: range key to: range value flags: flags maxUnits: -1.
+				self assert: library isSimdJSONFailure equals: plugin isSimdJSONFailure.
+				library isSimdJSONFailure
+					ifTrue: [ self assert: library ec equals: plugin ec ]
+					ifFalse: [
+						self assert: library first equals: plugin first.
+						self assert: (library at: 3) equals: (plugin at: 3).
+						self assert: (library at: 6) equals: (plugin at: 6).
+						(library first = 0 and: [ (flags anyMask: 8) not ]) ifTrue: [
+							self assert: (self plain: library) equals: (self plain: plugin) ] ] ] ] ].
+	large := 2 raisedTo: 70.
+	{ { large. large. 0. -1 }. { large negated. 3. 0. -1 }. { 1. large. 0. -1 }.
+	  { 1. 3. 0. SmallInteger maxVal + 1 }. { 1. 3. 0. large }. { 1. 3. large. -1 }.
+	  { SimdJSONTestProxy on: 1. 3. 0. -1 }. { 1. SimdJSONTestProxy on: 3. 0. -1 }.
+	  { 1. 3. SimdJSONTestProxy on: 0. -1 }. { 1. 3. 0. SimdJSONTestProxy on: -1 } } do: [ :each |
+		plugin := self prim: '[1]' from: each first to: each second flags: each third budget: -1 maxUnits: each fourth.
+		library := SimdJSONLibrary read: '[1]' from: each first to: each second flags: each third maxUnits: each fourth.
+		self assert: plugin isSimdJSONFailure.
+		self assert: library isSimdJSONFailure.
+		self assert: library ec equals: plugin ec ]
+]
+
+{ #category : 'tests' }
 SimdJSONFFITests >> testTicket [
 	"What a read keeps for sj_ffi_take, a tape larger than the buffer and the words of the
 	 WideStrings, is lost to a read that comes in between"
@@ -344,7 +400,8 @@ SimdJSONFFITests >> testWriteCulprits [
 SimdJSONFFITests >> testWriteArguments [
 	"The library refuses the arguments that primitiveWrite refuses, with #'bad argument',
 	and accepts the ones at the limits: flags 0 to 31, level and maxDepth 0 to 100000,
-	maxBytes from -1, SmallIntegers, a newLine that is exactly a ByteString"
+	maxBytes from -1, SmallIntegers (not their proxies), a newLine that is exactly a
+	ByteString"
 
 	| refused accepted call |
 	call := [ :args :prim |
@@ -363,7 +420,10 @@ SimdJSONFFITests >> testWriteArguments [
 		{ 0. String lf. -1. 1024. -1 }. { 0. String lf. 100001. 1024. -1 }. { 0. String lf. 1 << 70. 1024. -1 }.
 		{ 0. String lf. 0. -1. -1 }. { 0. String lf. 0. 100001. -1 }. { 0. String lf. 0. 1.5. -1 }.
 		{ 0. String lf. 0. 1024. -2 }. { 0. String lf. 0. 1024. 1 << 70 }.
-		{ 0. #lf. 0. 1024. -1 }. { 0. String lf asWideString. 0. 1024. -1 }. { 0. nil. 0. 1024. -1 } }.
+		{ 0. #lf. 0. 1024. -1 }. { 0. String lf asWideString. 0. 1024. -1 }. { 0. nil. 0. 1024. -1 }.
+		{ SimdJSONTestProxy on: 0. String lf. 0. 1024. -1 }. { 0. SimdJSONTestProxy on: String lf. 0. 1024. -1 }.
+		{ 0. String lf. SimdJSONTestProxy on: 0. 1024. -1 }. { 0. String lf. 0. SimdJSONTestProxy on: 1024. -1 }.
+		{ 0. String lf. 0. 1024. SimdJSONTestProxy on: -1 } }.
 	accepted := {
 		{ 0. String lf. 0. 0. -1 }. { 31. String lf. 0. 1024. -1 }. { 0. String lf. 100000. 100000. -1 }.
 		{ 0. ''. 0. 1024. 0 }. { 0. String crlf. 0. 1024. SmallInteger maxVal } }.

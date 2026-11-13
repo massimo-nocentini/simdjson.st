@@ -38,8 +38,10 @@ ProtoObject >> simdJSONSinkFor: aStream [
 
 { #category : '*SimdJSON' }
 ProtoObject >> simdJSONSourceKind [
-	"#string, #bytes (UTF-8) or nil: how primitiveRead reads me; a proxy answers for itself,
-	as primitiveRead looks at its class"
+	"#string, #bytes (UTF-8) or nil: how the reader reads me in place, the collection of a
+	ReadStream; classifyStream copies any other one into a String (primitiveRead takes
+	more: SimdJSONLibrary>>passable:); a proxy answers for itself, as primitiveRead looks at
+	its class"
 
 	^ nil
 ]

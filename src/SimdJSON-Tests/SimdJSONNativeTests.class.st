@@ -145,6 +145,21 @@ SimdJSONNativeTests >> testSelfTestFailure [
 ]
 
 { #category : 'tests' }
+SimdJSONNativeTests >> testSelfTestMaxInputUnits [
+	"The self-test reads more than a small maxInputUnits, which the verdict of the session
+	 does not depend on, and which it leaves as it was"
+
+	SimdJSONReader maxInputUnits: 100.
+	self assert: SimdJSONReader runNativeSelfTest isNil.
+	self assert: SimdJSONReader maxInputUnits equals: 100.
+	"forget the verdict of the session"
+	SimdJSONReader testHook: #nativeSelfTestFails value: nil.
+	self assert: SimdJSONReader nativeDictionariesWork.
+	self assert: SimdJSONReader maxInputUnits equals: 100.
+	self assert: (self count: #nativeDictionaries during: [ self read: '{"a":1}' ]) equals: 1
+]
+
+{ #category : 'tests' }
 SimdJSONNativeTests >> testSelfTestPasses [
 
 	self assert: SimdJSONReader runNativeSelfTest isNil.

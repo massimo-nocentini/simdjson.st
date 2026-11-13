@@ -14,7 +14,8 @@ Class {
 		'binary',
 		'classes',
 		'layout',
-		'ownWriters'
+		'ownWriters',
+		'budget'
 	],
 	#classVars : [
 		'MaxOutputBytes'
@@ -68,8 +69,9 @@ SimdJSONWriter class >> maxDepth [
 
 { #category : 'configuration' }
 SimdJSONWriter class >> maxOutputBytes [
-	"The most bytes of UTF-8 that one call of the plugin writes, or nil (the default) for no
-	cap; above it, writing signals SimdJSONResourceError"
+	"The most bytes of UTF-8 that one write writes, holes and all (the whole of toString:,
+	toBytes: or one nextPut:; each element of nextPutAll:), or nil (the default) for no cap;
+	above it, writing signals SimdJSONResourceError before the bytes that would pass it"
 
 	^ MaxOutputBytes
 
@@ -77,7 +79,11 @@ SimdJSONWriter class >> maxOutputBytes [
 
 { #category : 'configuration' }
 SimdJSONWriter class >> maxOutputBytes: anIntegerOrNil [
-	MaxOutputBytes := anIntegerOrNil
+	"nil, or a negative number as the -1 of primitiveWrite, for no cap; a cap beyond the
+	SmallIntegers that primitiveWrite takes is the largest of them, which no output reaches"
+
+	MaxOutputBytes := (anIntegerOrNil isNil or: [ anIntegerOrNil < 0 ])
+		ifFalse: [ anIntegerOrNil min: SmallInteger maxVal ]
 
 ]
 
@@ -174,18 +180,53 @@ SimdJSONWriter >> callPrim: anObject flags: flags [
 	"One write by the plugin, or by the fallback of SimdJSONReader (SimdJSON-FFI) without
 	it, which answers the same Array"
 
+	| bytes |
+	"what the write has left of maxOutputBytes, -1 without a cap"
+	bytes := budget ifNil: [ MaxOutputBytes ifNil: [ -1 ] ].
 	SimdJSONReader pluginAvailable ifFalse: [
 		^ SimdJSONReader fallback
 			ifNil: [ SimdJSONFailure on: nil ]
 			ifNotNil: [ :fallback |
 				fallback
 					write: anObject flags: flags newLine: newLine asString asByteString level: level
-					maxDepth: self class maxDepth maxBytes: (self class maxOutputBytes ifNil: [ -1 ]) ] ].
+					maxDepth: self class maxDepth maxBytes: bytes ] ].
 	^ self class
 		primWrite: anObject flags: flags newLine: newLine asString asByteString level: level
-		maxDepth: self class maxDepth maxBytes: (self class maxOutputBytes ifNil: [ -1 ])
+		maxDepth: self class maxDepth maxBytes: bytes
 		classes: (classes ifNil: [ classes := self class writeClasses ])
 		layout: (layout ifNil: [ layout := self class writeLayout ])
+
+]
+
+{ #category : 'private' }
+SimdJSONWriter >> capped: aBlock [
+	"Evaluate aBlock, a write that no other contains, counting what it writes against
+	maxOutputBytes; the writing methods test budget and MaxOutputBytes themselves, inline,
+	since that test is on the path of every value.  An exception that leaves the write
+	finds the budget put aside, before the handlers outside it run: what they write on me
+	is a write of its own, with the whole cap.  The write gets back what it had left on
+	every way back into it: a handler that resumes, or resumeUnchecked: and resignalAs:,
+	which go straight back to the signal; one that returns ends the write anyway"
+
+	budget := MaxOutputBytes.
+	^ [ aBlock
+			on: Exception
+			do: [ :exception | | left value |
+				left := budget.
+				budget := nil.
+				value := [ exception outer ] ensure: [ budget := left ].
+				exception resume: value ] ]
+		ensure: [ budget := nil ]
+
+]
+
+{ #category : 'private' }
+SimdJSONWriter >> charge: aNumber [
+	"aNumber bytes, about to be written: refused when they exceed what the write has left,
+	which then stays as it was, never under 0"
+
+	aNumber > budget ifTrue: [ ^ self tooLarge ].
+	budget := budget - aNumber
 
 ]
 
@@ -199,18 +240,21 @@ SimdJSONWriter >> close [
 
 { #category : 'private' }
 SimdJSONWriter >> emit: aString [
-	"ASCII text of the writer itself"
+	"ASCII text of the writer itself, a byte a character"
 
+	budget ifNotNil: [ self charge: aString size ].
 	sink nextPutAll: (binary ifTrue: [ aString asByteArray ] ifFalse: [ aString ])
 
 ]
 
 { #category : 'private' }
 SimdJSONWriter >> emitOutput: r [
-	"The output of a call of primitiveWrite on the stream, with its holes written in"
+	"The output of a call of primitiveWrite on the stream, with its holes written in; counted
+	whole before its first byte, so that the holes get what is left"
 
 	| output holes from |
 	output := r at: 2.
+	budget ifNotNil: [ self charge: output simdJSONUTF8Size ].
 	(holes := r at: 3) ifNil: [ ^ sink nextPutAll: output ].
 	from := 0.
 	1 to: holes size by: 3 do: [ :i | | saved |
@@ -277,8 +321,9 @@ SimdJSONWriter >> flagsBytes: aBoolean [
 
 { #category : 'initialize-release' }
 SimdJSONWriter >> floatPrinter: anObject [
-	"An object that answers printFloat:on:, which then writes every Float; nil (the default)
-	writes them as Float>>printOn: does, in the plugin"
+	"An object that answers printFloat:on:, which then writes every Float, in ASCII as JSON
+	wants it (written a byte a character, not encoded); nil (the default) writes them as
+	Float>>printOn: does, in the plugin"
 
 	floatPrinter := anObject
 
@@ -350,7 +395,8 @@ SimdJSONWriter >> mapElementSeparator [
 
 { #category : 'initialize-release' }
 SimdJSONWriter >> newLine: aString [
-	"The line end of pretty printing; OSPlatform current lineEnding by default"
+	"The line end of pretty printing; OSPlatform current lineEnding by default.  ASCII, as
+	JSON wants it (CR, LF): it is written a byte a character, not encoded"
 
 	newLine := aString
 
@@ -374,6 +420,7 @@ SimdJSONWriter >> newlineIndent [
 SimdJSONWriter >> nextPut: anObject [
 	"Write the JSON of anObject on the stream given to on:"
 
+	budget ifNil: [ MaxOutputBytes ifNotNil: [ ^ self capped: [ self nextPut: anObject ] ] ].
 	(self isPlain: anObject)
 		ifTrue: [ self writePlain: anObject ]
 		ifFalse: [ self writeOther: anObject ]
@@ -384,6 +431,7 @@ SimdJSONWriter >> nextPut: anObject [
 SimdJSONWriter >> nextPut: anObject as: schema [
 	"Write anObject with the mapping of schema"
 
+	budget ifNil: [ MaxOutputBytes ifNotNil: [ ^ self capped: [ self nextPut: anObject as: schema ] ] ].
 	(schema isNil or: [ anObject isNil ]) ifTrue: [ ^ self nextPut: anObject ].
 	^ (self mappingFor: schema) writeObject: anObject on: self
 
@@ -426,6 +474,7 @@ SimdJSONWriter >> output: anObject bytes: aBoolean [
 	that output with its holes written in, on a stream of its own"
 
 	| r stream savedSink savedBinary |
+	budget ifNil: [ MaxOutputBytes ifNotNil: [ ^ self capped: [ self output: anObject bytes: aBoolean ] ] ].
 	(self isPlain: anObject) ifTrue: [
 		r := self prim: anObject bytes: aBoolean.
 		(r at: 3) ifNil: [ ^ r at: 2 ] ].
@@ -473,8 +522,7 @@ SimdJSONWriter >> prim: anObject bytes: aBoolean [
 		r isSimdJSONFailure ifTrue: [ ^ self failed: r ].
 		(r at: 1) = 1 ifTrue: [ ^ OutOfMemory signal ] ].
 	(r at: 1) = 2 ifTrue: [ ^ self signalError: (r at: 4) culprit: (r at: 5) ].
-	(r at: 1) = 3 ifTrue: [
-		^ SimdJSONResourceError new code: #tooLarge; signal: 'the JSON exceeds SimdJSONWriter maxOutputBytes; raise it' ].
+	(r at: 1) = 3 ifTrue: [ ^ self tooLarge ].
 	^ r
 
 ]
@@ -499,14 +547,25 @@ SimdJSONWriter >> stringFor: anObject [
 
 ]
 
+{ #category : 'private' }
+SimdJSONWriter >> tooLarge [
+
+	^ SimdJSONResourceError new
+		code: #tooLarge;
+		signal: 'the JSON exceeds SimdJSONWriter maxOutputBytes; raise it'
+
+]
+
 { #category : 'writing' }
 SimdJSONWriter >> writeBoolean: aBoolean [
+	budget ifNil: [ MaxOutputBytes ifNotNil: [ ^ self capped: [ self writeBoolean: aBoolean ] ] ].
 	self emit: (aBoolean ifTrue: [ 'true' ] ifFalse: [ 'false' ])
 
 ]
 
 { #category : 'writing' }
 SimdJSONWriter >> writeFloat: aFloat [
+	budget ifNil: [ MaxOutputBytes ifNotNil: [ ^ self capped: [ self writeFloat: aFloat ] ] ].
 	aFloat isFinite ifFalse: [
 		nonFiniteAsNull ifTrue: [ ^ self writeNull ].
 		^ self signalError: 2 culprit: aFloat ].
@@ -518,6 +577,7 @@ SimdJSONWriter >> writeFloat: aFloat [
 
 { #category : 'writing' }
 SimdJSONWriter >> writeInteger: anInteger [
+	budget ifNil: [ MaxOutputBytes ifNotNil: [ ^ self capped: [ self writeInteger: anInteger ] ] ].
 	self emit: anInteger printString
 
 ]
@@ -533,6 +593,7 @@ SimdJSONWriter >> writeList: aCollection [
 SimdJSONWriter >> writeListStreamingDo: aBlock [
 	"aBlock gets a SimdJSONStreamingWriter, whose writeElement: writes each element"
 
+	budget ifNil: [ MaxOutputBytes ifNotNil: [ ^ self capped: [ self writeListStreamingDo: aBlock ] ] ].
 	self emit: '['.
 	self writeStreamingDo: aBlock.
 	self emit: ']'
@@ -550,6 +611,7 @@ SimdJSONWriter >> writeMap: aDictionary [
 SimdJSONWriter >> writeMapStreamingDo: aBlock [
 	"aBlock gets a SimdJSONStreamingWriter, whose writeKey:value: writes each entry"
 
+	budget ifNil: [ MaxOutputBytes ifNotNil: [ ^ self capped: [ self writeMapStreamingDo: aBlock ] ] ].
 	self emit: '{'.
 	self writeStreamingDo: aBlock.
 	self emit: '}'
@@ -574,6 +636,7 @@ SimdJSONWriter >> writeNil: aBoolean [
 
 { #category : 'writing' }
 SimdJSONWriter >> writeNull [
+	budget ifNil: [ MaxOutputBytes ifNotNil: [ ^ self capped: [ self writeNull ] ] ].
 	self emit: 'null'
 
 ]
@@ -582,6 +645,7 @@ SimdJSONWriter >> writeNull [
 SimdJSONWriter >> writeObject: anObject [
 	"Write anObject with the mapping of its class (SimdJSONMappingNotFound if none)"
 
+	budget ifNil: [ MaxOutputBytes ifNotNil: [ ^ self capped: [ self writeObject: anObject ] ] ].
 	(self mappingFor: anObject class) writeObject: anObject on: self
 
 ]
@@ -621,6 +685,7 @@ SimdJSONWriter >> writeStreamingDo: aBlock [
 SimdJSONWriter >> writeString: aString [
 	"Escaped by the plugin, as NeoJSONWriter escapes"
 
+	budget ifNil: [ MaxOutputBytes ifNotNil: [ ^ self capped: [ self writeString: aString ] ] ].
 	self writePlain: (aString isSimdJSONPlain
 		ifTrue: [ aString ]
 		ifFalse: [ String withAll: aString ])

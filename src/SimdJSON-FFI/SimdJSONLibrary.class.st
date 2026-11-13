@@ -1,7 +1,7 @@
 "
 I am libSimdJSONFFI, the engine of the SimdJSONPlugin built as a library of its own, which I call through the FFI of the image (plugins/SimdJSONPlugin/include/ffi/sjFFI.h of https://github.com/massimo-nocentini/pharo-vm has the contract).
 
-SimdJSONReader and SimdJSONWriter go through me when the VM has no SimdJSONPlugin (SimdJSONReader class>>fallback).  I answer read:from:to:flags:maxUnits: as primitiveRead answers primRead:, with simdjson's parse, but the objects are made in the image, by SimdJSONTapeDecoder, from the tape that the library writes.  I answer write:flags:newLine:level:maxDepth:maxBytes: as primitiveWrite answers primWrite:, the same text, but the value is walked in the image, by SimdJSONTapeEncoder, which writes a tape from which the library writes the JSON.  Both are faster than NeoJSON, and slower than the plugin.
+SimdJSONReader and SimdJSONWriter go through me when the VM has no SimdJSONPlugin (SimdJSONReader class>>fallback).  I answer read:from:to:flags:maxUnits: as primitiveRead answers primRead:, for the same sources and with the same failures (a source that the FFI does not pass in place is copied first, by its format: simdJSONPassableCopy), with simdjson's parse, but the objects are made in the image, by SimdJSONTapeDecoder, from the tape that the library writes.  I answer write:flags:newLine:level:maxDepth:maxBytes: as primitiveWrite answers primWrite:, the same text, but the value is walked in the image, by SimdJSONTapeEncoder, which writes a tape from which the library writes the JSON.  Both are faster than NeoJSON, and slower than the plugin.
 
 I look for the library in the directories of the VM, the image and the system (FFIUnix64LibraryFinder and the like), as libSimdJSONFFI.so, libSimdJSONFFI.dylib or libSimdJSONFFI.dll; libraryPath: names it instead, before the first read of a session.
 "
@@ -225,19 +225,21 @@ SimdJSONLibrary >> primTake: tape size: size words: words count: count ticket: t
 
 { #category : 'reading' }
 SimdJSONLibrary >> read: source from: start to: stop flags: flags maxUnits: maxUnits [
-	"The JSON value at start in source (a String, or UTF-8 bytes), as SimdJSONReader
-	class>>primRead:... answers it: { status. value. nextIndex. fixups. nil. code }, with
-	Dictionaries for flagDict and Symbol keys for flagSymbolKeys; or a SimdJSONFailure.
-	A read takes the scratch buffer, so that another process reading meanwhile makes one of
-	its own"
+	"The JSON value at start in source, any source that primitiveRead reads (exactly a
+	ByteArray as UTF-8, any other byte object as Latin-1, any 32-bit word object as UTF-32),
+	as SimdJSONReader class>>primRead:... answers it: { status. value. nextIndex. fixups.
+	nil. code }, with Dictionaries for flagDict and Symbol keys for flagSymbolKeys; or a
+	SimdJSONFailure, with the code of primitiveRead.  A read takes the scratch buffer, so
+	that another process reading meanwhile makes one of its own"
 
-	| buffer |
-	(self refusalOf: source from: start to: stop flags: flags maxUnits: maxUnits)
+	| passable buffer |
+	passable := self passable: source.
+	(self refusalOf: passable from: start to: stop flags: flags maxUnits: maxUnits)
 		ifNotNil: [ :code | ^ SimdJSONFailure on: code ].
 	buffer := Scratch.
 	Scratch := nil.
 	buffer ifNil: [ buffer := ByteArray new: self class scratchSize ].
-	^ [ self read: (self passable: source) from: start to: stop flags: flags maxUnits: maxUnits buffer: buffer ]
+	^ [ self read: passable from: start to: stop flags: flags maxUnits: maxUnits buffer: buffer ]
 		ensure: [ Scratch := buffer ]
 
 ]
@@ -346,9 +348,10 @@ SimdJSONLibrary >> takeWords: count [
 
 { #category : 'private' }
 SimdJSONLibrary >> passable: source [
-	"source, or a copy that the FFI passes as a pointer, with its simdJSONEncoding: a String
-	of another class than ByteString and WideString (a Symbol) is copied, in characters
-	(its simdJSONPassableCopy)"
+	"source, which the FFI passes in place, pinned, when it has a simdJSONEncoding (exactly a
+	ByteArray, a ByteString or a WideString); else its simdJSONPassableCopy, a ByteString or
+	a WideString that the library reads as primitiveRead reads source, or nil when
+	primitiveRead refuses source"
 
 	source simdJSONEncoding ifNotNil: [ ^ source ].
 	^ source simdJSONPassableCopy
@@ -356,17 +359,27 @@ SimdJSONLibrary >> passable: source [
 ]
 
 { #category : 'private' }
-SimdJSONLibrary >> refusalOf: source from: start to: stop flags: flags maxUnits: maxUnits [
-	"nil, or the error code that primitiveRead fails with for these arguments, in its order:
-	the source a String or a ByteArray (its simdJSONSourceKind), the numbers integers,
-	start..stop in it, and not both flagDict and flagSymbolKeys"
+SimdJSONLibrary >> isSmallInteger: anObject atLeast: minimum [
+	"Whether anObject is a SmallInteger not under minimum, as isIntegerAtLeast of
+	SimdJSONPlugin.c checks the numbers of primitiveRead and primitiveWrite"
 
-	source simdJSONSourceKind ifNil: [ ^ #'bad argument' ].
-	((start isInteger and: [ stop isInteger ])
-		and: [ (flags isInteger and: [ flags >= 0 ])
-		and: [ maxUnits isInteger and: [ maxUnits >= -1 ] ] ])
+	^ anObject isSimdJSONSmallInteger and: [ anObject >= minimum ]
+
+]
+
+{ #category : 'private' }
+SimdJSONLibrary >> refusalOf: passable from: start to: stop flags: flags maxUnits: maxUnits [
+	"nil, or the error code that primitiveRead fails with for these arguments, in its order:
+	a source that it reads (passable not nil), the numbers SmallIntegers, start..stop in the
+	units of the source, and not both flagDict and flagSymbolKeys"
+
+	passable ifNil: [ ^ #'bad argument' ].
+	((self isSmallInteger: start atLeast: SmallInteger minVal)
+		and: [ (self isSmallInteger: stop atLeast: SmallInteger minVal)
+		and: [ (self isSmallInteger: flags atLeast: 0)
+		and: [ self isSmallInteger: maxUnits atLeast: -1 ] ] ])
 			ifFalse: [ ^ #'bad argument' ].
-	(start < 1 or: [ start > (stop + 1) or: [ stop > source size ] ]) ifTrue: [ ^ #'bad index' ].
+	(start < 1 or: [ start > (stop + 1) or: [ stop > passable size ] ]) ifTrue: [ ^ #'bad index' ].
 	(flags > 15 or: [ (flags bitAnd: 12) = 12 ]) ifTrue: [ ^ #'bad argument' ].
 	^ nil
 
@@ -380,11 +393,12 @@ SimdJSONLibrary >> write: anObject flags: flags newLine: aByteString level: leve
 	and depth up to 100000, and aByteString passed in place as Latin-1, exactly a ByteString"
 
 	| buffer encoder |
-	(flags isInteger and: [ flags between: 0 and: 31 ]) ifFalse: [ ^ SimdJSONFailure on: #'bad argument' ].
-	((level isInteger and: [ level between: 0 and: 100000 ])
-		and: [ (depth isInteger and: [ depth between: 0 and: 100000 ])
-		and: [ maxBytes isInteger and: [ maxBytes between: -1 and: SmallInteger maxVal ] ] ])
+	((self isSmallInteger: flags atLeast: 0)
+		and: [ (self isSmallInteger: level atLeast: 0)
+		and: [ (self isSmallInteger: depth atLeast: 0)
+		and: [ self isSmallInteger: maxBytes atLeast: -1 ] ] ])
 			ifFalse: [ ^ SimdJSONFailure on: #'bad argument' ].
+	(flags > 31 or: [ level > 100000 or: [ depth > 100000 ] ]) ifTrue: [ ^ SimdJSONFailure on: #'bad argument' ].
 	aByteString simdJSONEncoding = self class encodingLatin1 ifFalse: [ ^ SimdJSONFailure on: #'bad argument' ].
 	buffer := Scratch.
 	Scratch := nil.

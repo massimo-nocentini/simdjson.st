@@ -384,7 +384,8 @@ SimdJSONReader class >> primInfo [
 SimdJSONReader class >> primRead: source from: start to: stop flags: flags budget: budget maxUnits: maxUnits
 		objectClass: objClass associationClass: assocClassOrNil wideStringClass: wideClass
 		hashSeed: seed dictLayout: layout [
-	"The JSON value at start in source (a String, or UTF-8 bytes), as
+	"The JSON value at start in source (a String, UTF-8 bytes, or another byte or 32-bit
+	word object: docs/SimdJSON.md, Primitive contract), as
 	{ status. value. nextIndex. fixups. keys. code }; flags are the sum of flagNext,
 	flagExact, flagDict and flagSymbolKeys.  docs/SimdJSON.md, Primitive contract, has the
 	whole contract"
@@ -427,20 +428,25 @@ SimdJSONReader class >> resetStatistics [
 { #category : 'native dictionaries' }
 SimdJSONReader class >> runNativeSelfTest [
 	"Answer nil when the Dictionaries that the plugin builds behave as the image's own
-	(slots, String>>hash, the probing of Dictionary>>scanFor:), else what failed"
+	(slots, String>>hash, the probing of Dictionary>>scanFor:), else what failed; the
+	settings of the session (test hooks, statistics, maxInputUnits) are put aside meanwhile,
+	since the verdict holds for the whole session"
 
-	| hooks statistics |
+	| hooks statistics maxUnits |
 	(self testHook: #nativeSelfTestFails) == true
 		ifTrue: [ ^ 'forced by the test hook #nativeSelfTestFails' ].
 	hooks := TestHooks.
 	statistics := Statistics.
+	maxUnits := MaxInputUnits.
 	TestHooks := Statistics := nil.
+	MaxInputUnits := #none.
 	^ [ [ self nativeSelfTestPrecheck ifNil: [ self nativeSelfTestProbe ] ]
 			on: Error
 			do: [ :error | error class name, ': ', error messageText asString ] ]
 		ensure: [
 			TestHooks := hooks.
-			Statistics := statistics ]
+			Statistics := statistics.
+			MaxInputUnits := maxUnits ]
 
 ]
 

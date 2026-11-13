@@ -531,7 +531,7 @@ SimdJSONReaderTests >> testPositions [
 SimdJSONReaderTests >> testPrimitiveErrorsAndFailures [
 	"A parse error is a status; only bad arguments fail the primitive"
 
-	| result |
+	| result large |
 	self requirePlugin.
 	result := self prim: '[1,' flags: 0 budget: -1.
 	self assert: result first equals: 2.
@@ -553,7 +553,14 @@ SimdJSONReaderTests >> testPrimitiveErrorsAndFailures [
 	"isBytes is true of a CompiledMethod, whose bytecodes the VM gives no pointer to"
 	result := self prim: Object >> #printString from: 1 to: 5 flags: 0 budget: -1 maxUnits: -1.
 	self assert: result isSimdJSONFailure.
-	self assert: result ec equals: #'bad argument'
+	self assert: result ec equals: #'bad argument'.
+	"numbers beyond the SmallIntegers are bad arguments, not bad indexes"
+	large := 2 raisedTo: 70.
+	{ { large. large. -1 }. { large negated. 3. -1 }. { 1. large. -1 }.
+	  { 1. 3. SmallInteger maxVal + 1 }. { 1. 3. large } } do: [ :each |
+		result := self prim: '[1]' from: each first to: each second flags: 0 budget: -1 maxUnits: each third.
+		self assert: result isSimdJSONFailure.
+		self assert: result ec equals: #'bad argument' ]
 ]
 
 { #category : 'tests - primitive' }
@@ -641,6 +648,64 @@ SimdJSONReaderTests >> testPrimitiveResult [
 	result := self prim: '1e2' flags: 0 budget: -1.
 	self assert: (result at: 2) equals: 100.0.
 	self assert: (result at: 4) isNil
+]
+
+{ #category : 'tests - primitive' }
+SimdJSONReaderTests >> testPrimitiveSources [
+	"Exactly a ByteArray is UTF-8; any other byte object is Latin-1 and any 32-bit word
+	 object UTF-32, in its own units (its basicSize); any other object fails"
+
+	| result read euro integer |
+	self requirePlugin.
+	read := [ :source :start :stop :flags |
+		self prim: source from: start to: stop flags: flags budget: -1 maxUnits: -1 ].
+	euro := self string: #( 16r20AC ).
+	"bytes, not the address an ExternalAddress holds; Latin-1, not UTF-8"
+	result := read value: (self externalAddress: #[ 91 34 16rC3 16rA9 34 93 32 32 ]) value: 1 value: 8 value: 0.
+	self assert: result first equals: 0.
+	self assert: (result at: 2) equals: { self string: #( 16rC3 16rA9 ) }.
+	self assert: (result at: 3) equals: 9.
+	integer := self integerOfBytes: '[1]      '.
+	{ integer. integer negated } do: [ :each |
+		result := read value: each value: 1 value: each basicSize value: 0.
+		self assert: result first equals: 0.
+		self assert: (result at: 2) equals: #( 1 ).
+		self assert: (result at: 3) equals: 10 ].
+	result := read value: (self words: '["', euro, '",1]') value: 1 value: 7 value: 0.
+	self assert: result first equals: 0.
+	self assert: (result at: 2) equals: { euro. 1 }.
+	self assert: (result at: 3) equals: 8.
+	result := read value: (self words: '[1] [2]') value: 5 value: 7 value: 1.
+	self assert: (result at: 2) equals: #( 2 ).
+	self assert: (result at: 3) equals: 8.
+	result := read value: (WordArray withAll: #( 34 16r110000 34 )) value: 1 value: 3 value: 0.
+	self assert: result first equals: 2.
+	self assert: (result at: 3) equals: 1.
+	self assert: (result at: 6) equals: 11.
+	result := read value: (Bitmap withAll: #( 91 49 93 )) value: 1 value: 3 value: 0.
+	self assert: result first equals: 0.
+	self assert: (result at: 2) equals: #( 1 ).
+	self assert: (result at: 3) equals: 4.
+	"of a class rooted at ProtoObject too"
+	result := read value: (self outsideObject: SimdJSONTestProtoBytes of: '[1]') value: 1 value: 3 value: 0.
+	self assert: (result at: 2) equals: #( 1 ).
+	result := read value: (self outsideObject: SimdJSONTestProtoWords of: '["', euro, '"]') value: 1 value: 5 value: 0.
+	self assert: (result at: 2) equals: { euro }.
+	result := read value: (SimdJSONTestProxy on: '[1]') value: 1 value: 1 value: 0.
+	self assert: result isSimdJSONFailure.
+	self assert: result ec equals: #'bad argument'.
+	"an empty input is a status, not a failure"
+	result := read value: 1.0e300 value: 1 value: 0 value: 0.
+	self deny: result isSimdJSONFailure.
+	self assert: result first equals: 2.
+	result := read value: (WordArray new: 2) value: 1 value: 3 value: 0.
+	self assert: result isSimdJSONFailure.
+	self assert: result ec equals: #'bad index'.
+	{ DoubleWordArray new: 3. DoubleByteArray new: 3. '[1]' asText. #( 91 49 93 ). nil. 42. 3.5. $a.
+	  [ :x | x ] compiledBlock } do: [ :each |
+		result := read value: each value: 1 value: 0 value: 0.
+		self assert: result isSimdJSONFailure.
+		self assert: result ec equals: #'bad argument' ]
 ]
 
 { #category : 'tests - classes' }

@@ -7,6 +7,20 @@ Class {
 }
 
 { #category : 'helpers' }
+SimdJSONWriterTests >> assertCap: bytes of: aBlock answers: anObject [
+	"aBlock answers anObject with maxOutputBytes bytes, and signals #tooLarge with a byte
+	 less"
+
+	SimdJSONWriter maxOutputBytes: bytes.
+	self assert: aBlock value equals: anObject.
+	SimdJSONWriter maxOutputBytes: bytes - 1.
+	self
+		should: aBlock
+		raise: SimdJSONResourceError
+		withExceptionDo: [ :error | self assert: error code equals: #tooLarge ]
+]
+
+{ #category : 'helpers' }
 SimdJSONWriterTests >> float: hi low: lo [
 	"A BoxedFloat64 of the bits hi (the sign, the exponent and the top of the mantissa) and lo"
 
@@ -240,6 +254,226 @@ SimdJSONWriterTests >> testMaxOutputBytes [
 		withExceptionDo: [ :error | self assert: error code equals: #tooLarge ].
 	SimdJSONWriter maxOutputBytes: nil.
 	self assert: (self write: (String new: 20 withAll: $a)) size equals: 22
+]
+
+{ #category : 'tests - output' }
+SimdJSONWriterTests >> testMaxOutputBytesHandlers [
+	"A handler outside a write that writes again on the same writer makes a write of its own,
+	 with the whole cap, after an error as after #tooLarge; one that resumes gives the write
+	 back what it had left"
+
+	| stream writer |
+	SimdJSONWriter maxOutputBytes: 12.
+	stream := WriteStream on: String new.
+	writer := SimdJSONWriter on: stream.
+	self
+		assert: ([ writer nextPut: { 'abcd'. Set with: Float nan } ]
+			on: SimdJSONWriteError
+			do: [ :error | writer nextPut: 'xyz'. #handled ])
+		equals: #handled.
+	self assert: stream contents equals: '["abcd",["xyz"'.
+	SimdJSONWriter maxOutputBytes: 5.
+	stream := WriteStream on: String new.
+	writer := SimdJSONWriter on: stream.
+	self
+		assert: ([ writer nextPut: (1 to: 10) ]
+			on: SimdJSONResourceError
+			do: [ :error | writer writeNull. #handled ])
+		equals: #handled.
+	self assert: stream contents equals: '[1,2,null'.
+	"16 bytes of the primitive leave 4 to the hole, after the handler wrote 5 of its own"
+	SimdJSONWriter maxOutputBytes: 20.
+	{ 'pq' -> '["abcd","xyz""pq","efgh"]'. 'pqr' -> '["abcd","xyz"' } do: [ :each |
+		stream := WriteStream on: String new.
+		writer := SimdJSONWriter on: stream.
+		writer for: Point customDo: [ :mapping |
+			mapping writer: [ :json :point | json nextPut: (Warning signal: 'a hole') ] ].
+		[ [ writer nextPut: { 'abcd'. 1 @ 2. 'efgh' } ]
+			on: Warning
+			do: [ :warning |
+				writer nextPut: 'xyz'.
+				warning resume: each key ] ]
+			on: SimdJSONResourceError
+			do: [ :error | self assert: error code equals: #tooLarge ].
+		self assert: stream contents equals: each value ].
+	"so does one that goes straight back to the signal, past the handler of the write: 2 bytes
+	 of the primitive and 33 of the hole leave 5, too few for the second string"
+	SimdJSONWriter maxOutputBytes: 40.
+	{ [ :error | error resumeUnchecked: nil ]. [ :error | error resignalAs: Warning new ] } do: [ :back |
+		stream := WriteStream on: String new.
+		writer := SimdJSONWriter on: stream.
+		writer for: Point customDo: [ :mapping |
+			mapping writer: [ :json :point |
+				Error signal: 'a hole'.
+				json
+					writeString: (String new: 30 withAll: $a);
+					listElementSeparator;
+					writeString: (String new: 30 withAll: $b) ] ].
+		self
+			assert: ([ writer nextPut: { 1 @ 2 } ]
+				on: Error, Warning
+				do: [ :exception |
+					exception class == Error ifTrue: [ back value: exception ].
+					exception class == Warning ifTrue: [ exception resume: nil ].
+					exception code ])
+			equals: #tooLarge.
+		self assert: stream contents equals: '["', (String new: 30 withAll: $a), '",' ]
+]
+
+{ #category : 'tests - output' }
+SimdJSONWriterTests >> testMaxOutputBytesHoles [
+	"The cap counts the whole write: the output of each call of the primitive, the holes it
+	 leaves, at any depth, and the text the writer writes itself, in bytes of UTF-8"
+
+	| hole latin1 wide |
+	hole := { Set with: 1. 'ab' }.
+	self assertCap: 10 of: [ SimdJSONWriter toString: hole ] answers: '[[1],"ab"]'.
+	self assertCap: 10 of: [ SimdJSONWriter toBytes: hole ] answers: '[[1],"ab"]' asByteArray.
+	"written by the image alone"
+	self
+		assertCap: 7
+		of: [ SimdJSONWriter toString: (1 to: 3) asOrderedCollection asSet ]
+		answers: '[1,2,3]'.
+	self
+		assertCap: 39
+		of: [ SimdJSONWriter toString: { 1/3. 1/3 } ]
+		answers: '[0.3333333333333333,0.3333333333333333]'.
+	"6 characters, 7 bytes; 5 characters, 8 bytes"
+	latin1 := self string: #( 16rE9 97 ).
+	self
+		assertCap: 7
+		of: [ SimdJSONWriter toString: (Set with: latin1) ]
+		answers: '["', latin1, '"]'.
+	wide := self string: #( 16r1F600 ).
+	self
+		assertCap: 8
+		of: [ SimdJSONWriter toString: (Set with: wide) ]
+		answers: '["', wide, '"]'.
+	self
+		assertCap: 11
+		of: [ SimdJSONWriter new floatPrinter: SimdJSONTestFloatPrinter new; stringFor: #( 1.5 2.5 ) ]
+		answers: '[1.50,2.50]'
+]
+
+{ #category : 'tests - output' }
+SimdJSONWriterTests >> testMaxOutputBytesNone [
+	"nil, or a negative number as the -1 of primitiveWrite, is no cap, on every path; a cap
+	 beyond the SmallIntegers is the largest of them"
+
+	| text |
+	text := String new: 20 withAll: $a.
+	#( -1 -5 ) do: [ :each |
+		SimdJSONWriter maxOutputBytes: each.
+		self assert: SimdJSONWriter maxOutputBytes isNil.
+		self assert: (SimdJSONWriter toString: text) size equals: 22.
+		self assert: (SimdJSONWriter toString: { Set new. text }) size equals: 27.
+		self assert: (String streamContents: [ :stream | (SimdJSONWriter on: stream) nextPut: text ]) size equals: 22 ].
+	SimdJSONWriter maxOutputBytes: (2 raisedTo: 70).
+	self assert: SimdJSONWriter maxOutputBytes equals: SmallInteger maxVal.
+	self assert: (SimdJSONWriter toString: { Set new. text }) size equals: 27
+]
+
+{ #category : 'tests - output' }
+SimdJSONWriterTests >> testMaxOutputBytesPretty [
+
+	| pretty text |
+	pretty := [ SimdJSONWriter new newLine: self lf; prettyPrint: true; stringFor: { Set with: 1. 'ab' } ].
+	text := pretty value.
+	self assert: text size equals: 20.
+	self assertCap: 20 of: pretty answers: text
+]
+
+{ #category : 'tests - output' }
+SimdJSONWriterTests >> testMaxOutputBytesPrefix [
+	"The error comes before the bytes that would pass the cap: a stream holds at most the cap"
+
+	| write |
+	write := [ | stream |
+		stream := WriteStream on: String new.
+		[ (SimdJSONWriter on: stream) nextPut: { Set with: 1. 'abcdefgh' } ]
+			on: SimdJSONResourceError
+			do: [ :error | self assert: error code equals: #tooLarge ].
+		stream contents ].
+	{ 16 -> '[[1],"abcdefgh"]'. 15 -> '[[1'. 14 -> '[['. 9 -> '' } do: [ :each |
+		SimdJSONWriter maxOutputBytes: each key.
+		self assert: write value equals: each value ]
+]
+
+{ #category : 'tests - output' }
+SimdJSONWriterTests >> testMaxOutputBytesReuse [
+	"A refused write leaves the writer to the next one, with the whole cap"
+
+	| stream writer |
+	SimdJSONWriter maxOutputBytes: 5.
+	stream := WriteStream on: String new.
+	writer := SimdJSONWriter on: stream.
+	self should: [ writer nextPut: (1 to: 10) ] raise: SimdJSONResourceError.
+	writer nextPut: #( 1 2 ).
+	self assert: stream contents equals: '[1,2,[1,2]'
+]
+
+{ #category : 'tests - output' }
+SimdJSONWriterTests >> testMaxOutputBytesStreams [
+	"On a stream, a write is one nextPut:, writeMapStreamingDo:, writeInteger:...; each element
+	 of nextPutAll:, without its line end"
+
+	| hole |
+	hole := { Set with: 1. 'ab' }.
+	self
+		assertCap: 10
+		of: [ String streamContents: [ :stream | (SimdJSONWriter on: stream) nextPut: hole ] ]
+		answers: '[[1],"ab"]'.
+	self
+		assertCap: 10
+		of: [ ByteArray streamContents: [ :stream | (SimdJSONWriter on: stream) nextPut: hole ] ]
+		answers: '[[1],"ab"]' asByteArray.
+	self
+		assertCap: 15
+		of: [
+			String streamContents: [ :stream |
+				(SimdJSONWriter on: stream) writeMapStreamingDo: [ :map |
+					map writeKey: 'a' value: 1; writeKey: 'b' value: (Set with: 2) ] ] ]
+		answers: '{"a":1,"b":[2]}'.
+	self
+		assertCap: 3
+		of: [
+			String streamContents: [ :stream |
+				(SimdJSONWriter on: stream) newLine: self lf; nextPutAll: { 123. 'a'. #( 1 ) } ] ]
+		answers: '123', self lf, '"a"', self lf, '[1]', self lf.
+	self
+		assertCap: 5
+		of: [ String streamContents: [ :stream | (SimdJSONWriter on: stream) writeInteger: 12345 ] ]
+		answers: '12345'
+]
+
+{ #category : 'tests - output' }
+SimdJSONWriterTests >> testMaxOutputBytesUTF8Size [
+	"The bytes the cap counts of an output, as primitiveWrite counts them: a surrogate in 3"
+
+	| latin1 wide |
+	latin1 := self string: #( 97 16rE9 ).
+	wide := self string: #( 16r1F600 97 16rD800 16r800 16r7FF ).
+	self assert: latin1 simdJSONUTF8Size equals: 3.
+	self assert: wide simdJSONUTF8Size equals: 13.
+	self assert: (self string: #( 16rE9 97 16rFF 16r80 16r7F )) simdJSONUTF8Size equals: 8.
+	{ latin1. wide } do: [ :each |
+		self assert: each simdJSONUTF8Size equals: (SimdJSONWriter toBytes: each) size - 2 ].
+	self assert: latin1 utf8Encoded simdJSONUTF8Size equals: 3.
+	"a long one counts the rest in a loop, once 64 are found at more than one in 8: here the
+	 64th is found at 511, then at 512 where the 65th, at 513, starts the loop"
+	self
+		assert: ((String new: 200 withAll: (Character value: 16rE9)) , 'abc') simdJSONUTF8Size
+		equals: 403.
+	#( 511 512 ) do: [ :at |
+		latin1 := String new: at + 10 withAll: $a.
+		(1 to: 63) , { at. at + 1. at + 5. at + 10 } do: [ :each |
+			latin1 at: each put: (Character value: 16rE9) ].
+		self assert: latin1 simdJSONUTF8Size equals: at + 10 + 67.
+		self assert: latin1 simdJSONUTF8Size equals: latin1 utf8Encoded size ].
+	"one in 9: never the loop"
+	latin1 := String new: 4096 withAll: $a.
+	9 to: 4096 by: 9 do: [ :each | latin1 at: each put: (Character value: 16rFF) ].
+	self assert: latin1 simdJSONUTF8Size equals: 4096 + 455
 ]
 
 { #category : 'tests - values' }

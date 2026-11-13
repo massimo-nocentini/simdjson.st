@@ -10,13 +10,6 @@ WideString >> simdJSONEncoding [
 ]
 
 { #category : '*SimdJSON-FFI' }
-WideString >> simdJSONPassableCopy [
-	"A copy that the library reads in place: a WideString"
-
-	^ WideString withAll: self
-]
-
-{ #category : '*SimdJSON-FFI' }
 WideString >> simdJSONTapeKeyOn: anEncoder [
 	"Exactly a WideString, as primitiveWrite: an instance of a subclass is what my superclass
 	makes of it"

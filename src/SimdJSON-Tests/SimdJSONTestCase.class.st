@@ -32,6 +32,17 @@ SimdJSONTestCase >> defaultTimeLimit [
 	^ 1 minute
 ]
 
+{ #category : 'helpers' }
+SimdJSONTestCase >> externalAddress: aByteArray [
+	"An ExternalAddress that holds the 8 bytes of aByteArray: a byte object of a subclass of
+	 ByteArray, which primitiveRead reads as Latin-1, not at the address it holds"
+
+	| address |
+	address := ExternalAddress new.
+	aByteArray doWithIndex: [ :each :index | address basicAt: index put: each ].
+	^ address
+]
+
 { #category : 'accessing' }
 SimdJSONTestCase >> ff [
 	"Form feed: white space for NeoJSON (isSeparator), not for RFC 8259"
@@ -39,10 +50,29 @@ SimdJSONTestCase >> ff [
 	^ String with: (Character value: 12)
 ]
 
+{ #category : 'helpers' }
+SimdJSONTestCase >> integerOfBytes: aString [
+	"The LargePositiveInteger whose bytes, the lowest first, are the characters of aString:
+	 a byte object that primitiveRead reads as Latin-1"
+
+	^ aString reverse inject: 0 into: [ :integer :each | integer * 256 + each asInteger ]
+]
+
 { #category : 'accessing' }
 SimdJSONTestCase >> lf [
 
 	^ String with: Character lf
+]
+
+{ #category : 'helpers' }
+SimdJSONTestCase >> outsideObject: aClass of: aString [
+	"An instance of aClass, a byte or word class rooted at ProtoObject, whose units are the
+	 code points of aString; thisContext stores them, since it has no basicAt:put:"
+
+	| object |
+	object := aClass basicNew: aString size.
+	aString doWithIndex: [ :each :index | thisContext object: object basicAt: index put: each asInteger ].
+	^ object
 ]
 
 { #category : 'helpers' }
@@ -142,6 +172,14 @@ SimdJSONTestCase >> string: codePoints [
 		ifFalse: [ WideString new: codePoints size ].
 	codePoints doWithIndex: [ :each :index | string at: index put: (Character value: each) ].
 	^ string
+]
+
+{ #category : 'helpers' }
+SimdJSONTestCase >> words: aString [
+	"The code points of aString in a WordArray: a word object that primitiveRead reads as
+	 UTF-32"
+
+	^ WordArray withAll: (aString asArray collect: [ :each | each asInteger ])
 ]
 
 { #category : 'running' }

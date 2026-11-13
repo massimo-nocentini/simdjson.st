@@ -1,13 +1,6 @@
 Extension { #name : 'WideSymbol' }
 
 { #category : '*SimdJSON-FFI' }
-WideSymbol >> simdJSONPassableCopy [
-	"A copy that the library reads in place: a WideString"
-
-	^ WideString withAll: self
-]
-
-{ #category : '*SimdJSON-FFI' }
 WideSymbol >> simdJSONTapeKeyOn: anEncoder [
 	"Exactly a WideSymbol, as primitiveWrite: an instance of a subclass is what my superclass
 	makes of it"
